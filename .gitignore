@@ -1,0 +1,7 @@
+*.o
+*.out
+*.a
+/t_drv
+/t_mt
+/t_san
+build/
