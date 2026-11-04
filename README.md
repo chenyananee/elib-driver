@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 # elib-driver
 
 面向 MCU 的轻量驱动框架：**manager / controller / device** 三层，设备操作是
@@ -9,6 +11,8 @@ printf 风格的流程日志。
 - 单公共头 `include/elib_drv.h`，库外可完整使用：不改库、不引内部头、无容量宏
 - 静态 `const` 描述符表 + 可选运行时槽位表（用户给缓存，容量自动推导）
 - 互斥锁与日志都通过接口外置，裸机传 `NULL` 即完全不锁、不打日志
+
+当前版本：**0.2.0**（`ELIB_DRV_VERSION`），单头 `include/elib_drv.h`。
 
 ## 特性
 
@@ -29,6 +33,20 @@ printf 风格的流程日志。
 - **可选流程日志**：注册 `printf` 或任意 `int (*)(const char *, ...)`，框架在
   **锁外**打印 init / 注册 / 注销 / open / close / 失败等流程；read/write/ioctl
   不打印，支持 `-DELIB_DRV_LOG_ENABLE=0` 整段裁掉
+
+## 用法文档
+
+| 流程 | 文档 |
+|------|------|
+| 生命周期与初始化 | [docs/usage_lifecycle.md](docs/usage_lifecycle.md) |
+| 静态描述符表 | [docs/usage_static_tables.md](docs/usage_static_tables.md) |
+| 运行时注册表 | [docs/usage_runtime_tables.md](docs/usage_runtime_tables.md) |
+| 设备打开与 I/O | [docs/usage_device_io.md](docs/usage_device_io.md) |
+| 控制器直连 | [docs/usage_controller_direct.md](docs/usage_controller_direct.md) |
+| 锁、并发与超时 | [docs/usage_locking.md](docs/usage_locking.md) |
+| 流程日志 | [docs/usage_logging.md](docs/usage_logging.md) |
+| RTOS 移植 | [docs/usage_porting.md](docs/usage_porting.md) |
+| 构建与测试 | [docs/usage_build_test.md](docs/usage_build_test.md) |
 
 ## 分层与调用路径
 
@@ -290,7 +308,7 @@ elib_drv_controller_close(uart);
 | `ELIB_DRV_ERR_ALREADY_EXIST` | 静态表内或与运行时表重名 |
 | `ELIB_DRV_ERR_NOT_FOUND` | 按名字找不到 controller |
 | `ELIB_DRV_ERR_NO_SLOT` | 运行时表不存在或已满 |
-| `ELIB_DRV_ERR_BUSY` | deinit/注销时仍有打开设备、直连打开的 controller，或 controller 仍有设备 |
+| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备或直连打开的 controller；unregister_controller 时仍有打开的设备/直连打开，或仍绑定设备 |
 | `ELIB_DRV_ERR_NOT_OPEN` | 未打开就 read/write/ioctl |
 | `ELIB_DRV_ERR_NOT_SUPPORTED` | 对应 ops 为 `NULL`；或注销静态项 |
 | `ELIB_DRV_ERR_LOCK` | 建锁失败 / 加锁超时 |
@@ -301,6 +319,8 @@ elib_drv_controller_close(uart);
 - 打开是引用计数：open 三次，`ops->open` 只调一次；close 到计数归零才调
   `ops->close`。controller 直连的 open/close 遵循同一规则，但计数与 device
   分开。
+- close 先递减计数、再在归零时调 `ops->close`；若 `ops->close` 返回负值，
+  计数已经释放，框架返回该错误并记录日志（设备仍按已关闭处理）。
 - `ELIB_DRV_DEV_F_EXCLUSIVE`：已有打开者时再次 open 返回 `-BUSY`。
 - `read/write/ioctl` 要求设备/控制器已打开（`-NOT_OPEN`），并持有对应的锁。
 - 设备锁超时取 `desc.lock_timeout_ms`，直连的 controller 锁取
@@ -499,7 +519,9 @@ static int port_unlock(void *m)
   不嵌套 device 锁。同一设备/控制器的 ops 或 fops 内禁止再调对应的
   `elib_drv_*read/write/ioctl/open/close`（非递归锁会自锁）。
 - `init` / `deinit` / `register_*` / `unregister_*` 只在启动或设备发现期调用，
-  不与 I/O 并发；`find` / `foreach` 只读，可与 I/O 并发。
+  不与 I/O 并发；`find` / `foreach` 只读，可与 I/O 并发，但不得与
+  `register_*` / `unregister_*` 并发（会拿到悬空指针）；`foreach` 回调内
+  不得注册或注销。
 - 全部 API 仅任务上下文可用，ISR 不调用；驱动需要 ISR 访问时用自己的机制。
 - 注销静态项返回 `-NOT_SUPPORTED`；运行时项在设备打开或 controller 直连打开
   期间返回 `-BUSY`。
@@ -536,6 +558,7 @@ src/elib_drv_manager.c   init/deinit/校验/双表/注册注销/查找/遍历
 src/elib_drv_device.c    open/close/read/write/ioctl/访问器/控制器锁
 test/test_elib_drv.c     功能 + 双表 + 日志 + 锁纪律回归
 test/test_elib_drv_mt.c  POSIX 多线程验证（-pthread）
+docs/usage_*.md          9 篇流程文档（每篇配 .en.md 英文版）
 ```
 
 ## License

@@ -101,9 +101,10 @@ typedef struct {
 /* ---- controller ops (const, flash) -------------------------------------
  *
  * Both hooks are optional. init is called after the contexts are wired, so it
- * may look up and register its own devices; deinit may also run for a
- * controller whose init never completed (rollback path), therefore both must
- * tolerate a partially initialized controller. */
+ * may look up and register its own devices. A failing init (negative return)
+ * must clean up its own partial state: the framework does NOT call deinit for
+ * that controller, it only releases the devices the init registered and the
+ * controller lock. deinit therefore runs only after a successful init. */
 
 typedef struct {
     int (*init)(elib_drv_controller_t *ctrl);    /* optional */

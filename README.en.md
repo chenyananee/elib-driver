@@ -1,3 +1,5 @@
+[简体中文](README.md) | **English**
+
 # elib-driver
 
 A lightweight driver framework for MCU targets: three layers
@@ -14,6 +16,8 @@ an optional printf-style flow log.
   (user supplied cache, capacity derived automatically)
 - Locking and logging are external interfaces; `NULL` port means bare metal
   with no locking and no log
+
+Current version: **0.2.0** (`ELIB_DRV_VERSION`), single header `include/elib_drv.h`.
 
 ## Features
 
@@ -40,6 +44,20 @@ an optional printf-style flow log.
   callback; the framework logs init/register/unregister/open/close/failures
   **outside its locks**, never logs read/write/ioctl, and can be stripped with
   `-DELIB_DRV_LOG_ENABLE=0`
+
+## Usage Docs
+
+| Flow | Doc |
+|------|-----|
+| Lifecycle and initialization | [docs/usage_lifecycle.en.md](docs/usage_lifecycle.en.md) |
+| Static descriptor tables | [docs/usage_static_tables.en.md](docs/usage_static_tables.en.md) |
+| Runtime registration | [docs/usage_runtime_tables.en.md](docs/usage_runtime_tables.en.md) |
+| Device open and I/O | [docs/usage_device_io.en.md](docs/usage_device_io.en.md) |
+| Direct controller access | [docs/usage_controller_direct.en.md](docs/usage_controller_direct.en.md) |
+| Locking and concurrency | [docs/usage_locking.en.md](docs/usage_locking.en.md) |
+| Flow logging | [docs/usage_logging.en.md](docs/usage_logging.en.md) |
+| RTOS porting | [docs/usage_porting.en.md](docs/usage_porting.en.md) |
+| Building and testing | [docs/usage_build_test.en.md](docs/usage_build_test.en.md) |
 
 ## Layers and call path
 
@@ -308,7 +326,7 @@ read/write, driver defined for ioctl), a negative value on failure equal to
 | `ELIB_DRV_ERR_ALREADY_EXIST` | duplicate name in the static or runtime table |
 | `ELIB_DRV_ERR_NOT_FOUND` | controller name not found |
 | `ELIB_DRV_ERR_NO_SLOT` | runtime table absent or full |
-| `ELIB_DRV_ERR_BUSY` | deinit/unregister with open devices, a directly opened controller, or a controller still bound |
+| `ELIB_DRV_ERR_BUSY` | deinit with an open device or a directly opened controller; unregister_controller with an open device/direct open, or a controller still bound to devices |
 | `ELIB_DRV_ERR_NOT_OPEN` | read/write/ioctl before open |
 | `ELIB_DRV_ERR_NOT_SUPPORTED` | ops/fops pointer is `NULL`; or unregister a static entry |
 | `ELIB_DRV_ERR_LOCK` | lock creation failed / lock timeout |
@@ -319,6 +337,9 @@ read/write, driver defined for ioctl), a negative value on failure equal to
 - Open is reference counted: three opens call `ops->open` once; `ops->close`
   runs when the last close drops the count to zero. Direct controller
   open/close uses the same rule but its count is independent from devices.
+- Close decrements the count first and only calls `ops->close` at zero; if
+  `ops->close` returns a negative value the count is already released, the
+  framework returns that error and logs it (the device stays closed).
 - `ELIB_DRV_DEV_F_EXCLUSIVE`: a second open returns `-BUSY`.
 - read/write/ioctl require an opened device or controller (`-NOT_OPEN`) and
   run under the matching lock.
@@ -527,7 +548,9 @@ RAM, while the flow log still works independently.
   self-deadlock).
 - `init` / `deinit` / `register_*` / `unregister_*` are startup or discovery
   time operations, never concurrent with I/O; `find` / `foreach` are read only
-  and can run concurrently with I/O.
+  and can run concurrently with I/O, but never with `register_*` /
+  `unregister_*` (they would hand out dangling pointers); a `foreach` callback
+  must not register or unregister.
 - All APIs are task context only; ISRs must use the driver's own mechanisms.
 - Unregistering a static entry returns `-NOT_SUPPORTED`; a runtime entry that
   is still open, or a directly opened controller, returns `-BUSY`.
@@ -566,6 +589,7 @@ src/elib_drv_manager.c   init/deinit/validation/tables/registration/lookup
 src/elib_drv_device.c    open/close/read/write/ioctl/accessors/controller lock
 test/test_elib_drv.c     functional + dual table + log + lock discipline
 test/test_elib_drv_mt.c  POSIX multi thread check (-pthread)
+docs/usage_*.md          nine flow docs (each with a .en.md English version)
 ```
 
 ## License
