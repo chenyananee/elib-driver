@@ -139,6 +139,16 @@ elib_drv_unregister_device(dev);         /* 运行期移除，槽位可复用 */
 - 静态表项不可注销（返回 `-ELIB_DRV_ERR_NOT_SUPPORTED`）；静态设备只能绑定
   静态 controller，运行时设备可绑定两者。
 
+### 注册组合矩阵
+
+| controller \ device | 静态 device | 运行时 device |
+|---|---|---|
+| 静态 controller | 支持：`init` 时按名字绑定 | 支持：`register_device` 时按名字绑定 |
+| 运行时 controller | 不支持：`init` 只查静态表，返回 `-ELIB_DRV_ERR_NOT_FOUND` | 支持：先 `register_controller`，再 `register_device` |
+
+- 静态 device 的 `controller` 只在 `elib_drv_init` 时对静态表解析一次，没有延迟绑定/重绑 API；写成 `controller = NULL` 则保持无绑定。
+- 运行时 device 可以绑定静态或运行时 controller；静态 device 不能绑定运行时 controller。
+
 ## 快速上手
 
 ```c

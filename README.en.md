@@ -155,6 +155,16 @@ elib_drv_unregister_device(dev);         /* remove, slot is reusable */
   static devices may only bind static controllers, runtime devices may bind
   either.
 
+### Registration combinations
+
+| controller \ device | static device | runtime device |
+|---|---|---|
+| static controller | supported: bound by name at `init` | supported: bound by name in `register_device` |
+| runtime controller | not supported: `init` only searches the static table and returns `-ELIB_DRV_ERR_NOT_FOUND` | supported: `register_controller` first, then `register_device` |
+
+- A static device's `controller` is resolved once against the static table in `elib_drv_init`; there is no deferred binding/rebind API, and `controller = NULL` leaves it unbound.
+- A runtime device may bind a static or a runtime controller; a static device cannot bind a runtime controller.
+
 ## Quick start
 
 ```c
