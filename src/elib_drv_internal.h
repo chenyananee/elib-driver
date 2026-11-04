@@ -7,6 +7,10 @@
 /* Single manager instance: the library has no global state besides this. */
 typedef struct {
     uint8_t initialized;
+    uint8_t initializing;          /* controller ops->init is running */
+    uint32_t epoch_counter;        /* monotonic registration epoch */
+    uint32_t active_epoch;         /* epoch attached to new devices */
+    elib_drv_controller_t *initializing_ctrl; /* controller whose init runs */
     const elib_drv_port_t *port;
     elib_drv_log_fn log;
 
@@ -25,8 +29,8 @@ extern elib_drv_manager_t elib_drv_g_manager;
 
 /* Mutex helpers: a NULL lock or a NULL port means "do not lock". A failing
  * port call is reported as -ELIB_DRV_ERR_LOCK. */
-int  elib_drv__lock(void *lock, uint32_t timeout_ms);
-void elib_drv__unlock(void *lock);
+int  elib_drv_lock_helper(void *lock, uint32_t timeout_ms);
+void elib_drv_unlock_helper(void *lock);
 
 #if ELIB_DRV_LOG_ENABLE
 #define ELIB_DRV_LOG(...)                                              \

@@ -96,11 +96,11 @@ MT ALL PASSED (300000 hardware ops, 1 exclusive winner)
 
 | 领域 | 覆盖内容 |
 |---|---|
-| init / deinit | 静态接线、NULL port、非法配置、重名、空 ctx、未知 controller、重复 init、deinit BUSY、回滚、deinit 错误透传 |
+| init / deinit | 静态接线、NULL port、非法配置、重名、空 ctx、未知 controller、重复 init、init 中 deinit 拒绝、逆序 teardown、失败 controller 直连关闭、deinit BUSY、回滚、deinit 错误透传 |
 | 查找 / 遍历 | `find`、`foreach` 顺序与提前停止 |
 | device I/O | 引用计数、EXCLUSIVE、open 失败、未打开、参数/返回值检查、NOT_SUPPORTED、I/O 不打日志、锁超时 |
 | 控制器直连 | 引用计数、I/O、未打开、无 fops、参数/返回检查、持锁调用、BUSY、失败回滚、访问器 |
-| 运行时表 | 无槽位、注册/注销、重名、未知 controller、槽位复用、未对齐/极小缓存、init 子设备回收、槽位耗尽 |
+| 运行时表 | 无槽位、注册/注销、重复注销拒绝、init 内注销自身拒绝、重名、未知 controller、槽位复用、未对齐/极小缓存、init 子设备与未绑定设备回收、槽位耗尽 |
 | 日志 | 流程记录、关闭、deinit 保留、注册失败日志、直连日志 |
 | 边界 | 上下文尺寸上界、访问器 NULL 安全 |
 

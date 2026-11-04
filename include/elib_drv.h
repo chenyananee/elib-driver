@@ -85,8 +85,8 @@ typedef struct elib_drv_device_desc     elib_drv_device_desc_t;
 typedef struct {
     const struct elib_drv_controller_desc *desc;
     void    *lock;
-    uint16_t device_count;          /* devices bound to this controller */
-    uint16_t open_count;            /* direct open/close reference count */
+    uint32_t device_count;          /* devices bound to this controller */
+    uint32_t open_count;            /* direct open/close reference count */
 } elib_drv_controller_t;
 
 /* Per device runtime state, same rules as above. */
@@ -94,17 +94,19 @@ typedef struct {
     const struct elib_drv_device_desc *desc;
     void     *lock;
     elib_drv_controller_t *controller;
-    uint16_t open_count;
-    uint16_t reserved;
+    uint32_t open_count;
+    uint32_t reserved;              /* registration epoch, framework internal */
 } elib_drv_device_t;
 
 /* ---- controller ops (const, flash) -------------------------------------
  *
  * Both hooks are optional. init is called after the contexts are wired, so it
  * may look up and register its own devices. A failing init (negative return)
- * must clean up its own partial state: the framework does NOT call deinit for
- * that controller, it only releases the devices the init registered and the
- * controller lock. deinit therefore runs only after a successful init. */
+ * must close direct opens it made on OTHER controllers and clean up any state
+ * outside the framework. The framework does NOT call deinit for that
+ * controller; it releases every runtime device registered while this init ran
+ * and destroys the controller lock. deinit therefore runs only after a
+ * successful init. */
 
 typedef struct {
     int (*init)(elib_drv_controller_t *ctrl);    /* optional */
@@ -203,7 +205,9 @@ typedef struct {
  * given all four callbacks are required. mutex_lock returns 0 on success and
  * a negative value on timeout/failure; the framework maps that to
  * -ELIB_DRV_ERR_LOCK. The framework never allocates, so the port owns the
- * mutex storage (heap or a static pool). */
+ * mutex storage (heap or a static pool). The struct itself must outlive the
+ * manager (store it statically); the descriptor tables and runtime cache do
+ * so as well. */
 typedef struct {
     void *(*mutex_create)(const char *name);
     void  (*mutex_destroy)(void *mutex);
@@ -229,7 +233,11 @@ int elib_drv_device_foreach(int (*fn)(elib_drv_device_t *dev, void *arg),
  *
  * Registration copies the descriptor into a free slot of the runtime table;
  * out (may be NULL) receives the new handle. Unregistering a static entry
- * returns -ELIB_DRV_ERR_NOT_SUPPORTED. */
+ * returns -ELIB_DRV_ERR_NOT_SUPPORTED. A runtime handle is invalid as soon as
+ * it is unregistered: unregistering it again returns
+ * -ELIB_DRV_ERR_INVALID_PARAM and an old handle must never be used after its
+ * slot has been reused. A controller that calls unregister on itself from its
+ * own ops->init gets -ELIB_DRV_ERR_BUSY. */
 
 int elib_drv_register_controller(const elib_drv_controller_desc_t *desc,
                                  elib_drv_controller_t **out);

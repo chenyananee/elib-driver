@@ -45,6 +45,8 @@ slot         = descriptor + the ctx of that descriptor
 | `unregister_controller` | devices still bound (`device_count != 0`) | `-ELIB_DRV_ERR_BUSY` |
 | `unregister_device` | `open_count != 0` | `-ELIB_DRV_ERR_BUSY` |
 | `unregister_*` | the handle is not a runtime slot | `-ELIB_DRV_ERR_INVALID_PARAM` |
+| `unregister_*` | unregistering an already released slot again | `-ELIB_DRV_ERR_INVALID_PARAM` |
+| `unregister_controller` | unregistering itself from its own `ops->init` | `-ELIB_DRV_ERR_BUSY` |
 
 - Unregistering a controller calls its `ops->deinit`; when `ops->deinit` returns an error the slot is **still released** and the error is returned to the caller.
 - Unregistering a device decrements the controller's `device_count`; the cleared slot can be reused by a later registration.
@@ -55,7 +57,7 @@ slot         = descriptor + the ctx of that descriptor
 | Failure point | Framework cleanup |
 |---|---|
 | controller duplicate / no free slot / lock creation | slot untouched or cleared, `device_count`/`open_count` unchanged |
-| controller `ops->init` fails | release the runtime devices it registered during `init`, close its direct open, destroy the lock, clear the slot |
+| controller `ops->init` fails | release every runtime device registered during `init` (whatever controller it bound), close its direct open, destroy the lock, clear the slot |
 | device duplicate / unknown controller / no free slot / lock creation | slot untouched, the controller's `device_count` unchanged |
 
 ## Example
@@ -93,7 +95,7 @@ void add_sensor(void)
 - The slot cache is user supplied and must outlive the registration; the library never allocates or grows it.
 - Runtime and static tables share one lookup namespace, so a duplicate name is rejected at registration.
 - `elib_drv_register_*` / `unregister_*` are startup or discovery-time calls, never concurrent with I/O.
-- A handle is invalid immediately after unregistration; `find`/`foreach` must not run concurrently with unregistration.
+- A handle is invalid immediately after unregistration: unregistering it again returns `-ELIB_DRV_ERR_INVALID_PARAM`; an old handle must not be used once its slot is reused; `find`/`foreach` must not run concurrently with unregistration.
 
 ## See also
 

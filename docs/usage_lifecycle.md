@@ -42,29 +42,31 @@ elib_drv_init(port, cfg)
 | port 校验 | 不改 manager | `-ELIB_DRV_ERR_INVALID_PARAM` |
 | config 校验 | 不改 manager | `INVALID_PARAM` / `ALREADY_EXIST` / `NOT_FOUND` |
 | 创建锁 | 已创建的锁全部销毁，静态 ctx 清零，不调用任何 `ops` | `-ELIB_DRV_ERR_LOCK` |
-| controller `ops->init` | 释放运行时设备与运行时 controller，销毁全部锁；**已成功**的 controller 会调用 `deinit`，**失败的这个不会** | 该 `ops->init` 的返回值 |
+| controller `ops->init` | 释放 init 期间注册的所有运行时设备（无论绑定到哪个 controller）、关闭失败 controller 的直连、销毁锁；**已成功**的 controller 会调用 `deinit`，**失败的这个不会** | 该 `ops->init` 的返回值 |
 | 成功 | 无 | `0` |
 
-> 失败的 `ops->init` 必须自己清理已经做了一半的初始化（包括 init 内打开的直连）；框架只负责释放它注册的运行时设备并销毁锁。
+> 失败的 `ops->init` 仍必须清理硬件状态与其他 controller 上的直连；框架会释放它 init 期间注册的所有运行时设备、关闭失败 controller 的直连并销毁锁（静态 init 失败时，其余未初始化 controller 的直连也会统一关闭）。
 
 ## deinit 流程
 
-`elib_drv_deinit` 先做四项 BUSY 检查，全部通过后进入 teardown：
+`elib_drv_deinit` 先确认自己不在 `init` 过程中，再做四项 BUSY 检查，全部通过后进入 teardown：
 
 | 检查项 | 条件 |
 |---|---|
+| init 进行中 | `initializing` 非 0，直接返回 `-ELIB_DRV_ERR_BUSY` |
 | 静态 device | `open_count != 0` |
 | 运行时 device 槽 | `desc != NULL && open_count != 0` |
 | 静态 controller | `open_count != 0`（直连） |
 | 运行时 controller 槽 | `desc != NULL && open_count != 0`（直连） |
+| controller 注销自身 | 在该 controller 的 `ops->init` 内调用 `elib_drv_unregister_controller` 返回 `-BUSY` |
 
-teardown 顺序固定：
+teardown 顺序固定，且按注册/数组顺序**逆序**释放：
 
-1. 释放静态 device（必要时调用 `ops->close`）；
-2. 释放运行时 device 槽；
-3. 释放运行时 controller 槽（关闭直连、调用 `ops->deinit`、销毁锁）；
-4. 释放静态 controller（同上）；
-5. `memset` manager，但**保留 log 回调**，返回第一个 `ops->deinit` 错误。
+1. 逆序释放静态 device（必要时调用 `ops->close`）；
+2. 逆序释放运行时 device 槽；
+3. 逆序释放运行时 controller 槽（关闭直连、调用 `ops->deinit`、销毁锁）；
+4. 逆序释放静态 controller（已成功 init 的调用 `deinit`；未成功的先关闭直连再销毁锁）；
+5. `memset` manager，但**保留 log 回调**，返回第一个 `ops->close` / `ops->deinit` 错误。
 
 deinit 会把能拆的全部拆完：即使某个 `ops->deinit` 返回错误，后续 controller 仍会继续释放，调用方拿到的是第一个错误码。
 
@@ -78,7 +80,7 @@ deinit 会把能拆的全部拆完：即使某个 `ops->deinit` 返回错误，�
 | `ELIB_DRV_ERR_NOT_FOUND` | device 的 `controller` 名字找不到 |
 | `ELIB_DRV_ERR_LOCK` | `mutex_create` 返回 `NULL` |
 | `ELIB_DRV_ERR_NOT_INITIALIZED` | 未 init 就调用其它 API 或重复 deinit |
-| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备或直连打开的 controller |
+| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备/直连打开的 controller，或 `init` 仍在执行；controller 在自身 `init` 内注销自己 |
 | controller `ops->init` 的错误 | 原样透传（负值） |
 
 ## 示例

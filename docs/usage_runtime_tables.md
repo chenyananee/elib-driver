@@ -45,6 +45,8 @@
 | `unregister_controller` | 仍有设备绑定（`device_count != 0`） | `-ELIB_DRV_ERR_BUSY` |
 | `unregister_device` | `open_count != 0` | `-ELIB_DRV_ERR_BUSY` |
 | `unregister_*` | 句柄不属于运行时槽位 | `-ELIB_DRV_ERR_INVALID_PARAM` |
+| `unregister_*` | 重复注销已释放的槽位 | `-ELIB_DRV_ERR_INVALID_PARAM` |
+| `unregister_controller` | 在该 controller 的 `ops->init` 内注销自身 | `-ELIB_DRV_ERR_BUSY` |
 
 - 注销 controller 会调用它的 `ops->deinit`；`ops->deinit` 返回错误时槽位**仍会释放**，错误码返回给调用方。
 - 注销 device 会让 controller 的 `device_count` 减一，槽位清空后可以被下一次注册复用。
@@ -55,7 +57,7 @@
 | 失败点 | 框架的清理 |
 |---|---|
 | controller 重名 / 无空槽 / 建锁失败 | 不占槽或清空槽位，`device_count`/`open_count` 不变 |
-| controller 的 `ops->init` 失败 | 释放它 `init` 期间注册的运行时设备、关闭它的直连打开、销毁锁、清空槽位 |
+| controller 的 `ops->init` 失败 | 释放它 `init` 期间注册的所有运行时设备（无论绑定到哪个 controller）、关闭它的直连打开、销毁锁、清空槽位 |
 | device 重名 / controller 不存在 / 无空槽 / 建锁失败 | 不占槽，controller 的 `device_count` 不变 |
 
 ## 示例
@@ -93,7 +95,7 @@ void add_sensor(void)
 - 槽位缓存由用户提供，生命周期必须覆盖整个注册期；库不会分配或扩容。
 - 运行时表与静态表共享同一个查找命名空间，重名会被注册拒绝。
 - `elib_drv_register_*` / `unregister_*` 只在启动或设备发现期调用，不与 I/O 并发。
-- 注销后的句柄立即失效；`find`/`foreach` 不得与注销并发。
+- 注销后的句柄立即失效：重复注销返回 `-ELIB_DRV_ERR_INVALID_PARAM`；槽位复用后旧句柄不得再用；`find`/`foreach` 不得与注销并发。
 
 ## 相关
 

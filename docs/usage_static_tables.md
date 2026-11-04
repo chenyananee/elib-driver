@@ -60,7 +60,7 @@ static const elib_drv_config_t cfg = {
 
 ## 内存成本
 
-- 32 位目标：`elib_drv_controller_t` 12 B，`elib_drv_device_t` 16 B（不含锁本身，锁由 port 分配）。
+- 32 位目标：`elib_drv_controller_t` 16 B，`elib_drv_device_t` 20 B（不含锁本身，锁由 port 分配）。
 - 64 位目标：`elib_drv_controller_t` 24 B，`elib_drv_device_t` 32 B。
 - 描述符只占 flash；RAM 里只有每个表项一份 `ctx`。
 

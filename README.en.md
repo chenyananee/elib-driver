@@ -118,8 +118,11 @@ elib_drv_init(&port, &cfg);                  /* port = NULL for bare metal */
   that writes them does not compile.
 - Every entry points at its own `ctx`; the framework owns those fields and the
   caller must never write them.
-- RAM cost on a 32-bit target: 16 B per device context, 12 B per controller
+- RAM cost on a 32-bit target: 20 B per device context, 16 B per controller
   (32/24 B on 64-bit).
+- `port`, the descriptor tables and the runtime cache must outlive the manager
+  (static storage is the normal choice); the `config` struct itself may live on
+  the stack.
 
 ### Runtime table: user cache, automatic capacity
 
@@ -154,6 +157,9 @@ elib_drv_unregister_device(dev);         /* remove, slot is reusable */
 - Static entries cannot be unregistered (`-ELIB_DRV_ERR_NOT_SUPPORTED`);
   static devices may only bind static controllers, runtime devices may bind
   either.
+- A runtime handle is invalid immediately after unregistration: unregistering it
+  again returns `-ELIB_DRV_ERR_INVALID_PARAM`, and an old handle must never be
+  used after its slot has been reused.
 
 ### Registration combinations
 
@@ -336,7 +342,7 @@ read/write, driver defined for ioctl), a negative value on failure equal to
 | `ELIB_DRV_ERR_ALREADY_EXIST` | duplicate name in the static or runtime table |
 | `ELIB_DRV_ERR_NOT_FOUND` | controller name not found |
 | `ELIB_DRV_ERR_NO_SLOT` | runtime table absent or full |
-| `ELIB_DRV_ERR_BUSY` | deinit with an open device or a directly opened controller; unregister_controller with an open device/direct open, or a controller still bound to devices |
+| `ELIB_DRV_ERR_BUSY` | deinit with an open device, a directly opened controller, or while init is still running; unregister_controller with an open device/direct open, a controller still bound to devices, or itself from its own init |
 | `ELIB_DRV_ERR_NOT_OPEN` | read/write/ioctl before open |
 | `ELIB_DRV_ERR_NOT_SUPPORTED` | ops/fops pointer is `NULL`; or unregister a static entry |
 | `ELIB_DRV_ERR_LOCK` | lock creation failed / lock timeout |

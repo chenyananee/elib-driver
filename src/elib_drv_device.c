@@ -13,7 +13,7 @@ static uint32_t device_timeout(const elib_drv_device_t *dev)
 
 static int lock_device(elib_drv_device_t *dev)
 {
-    int rc = elib_drv__lock(dev->lock, device_timeout(dev));
+    int rc = elib_drv_lock_helper(dev->lock, device_timeout(dev));
 
     if (rc != 0) {
         ELIB_DRV_LOG("[elib_drv] E: %s lock timeout", dev->desc->name);
@@ -38,7 +38,7 @@ int elib_drv_open(elib_drv_device_t *dev, uint32_t flags)
     }
     if (((dev->desc->flags & ELIB_DRV_DEV_F_EXCLUSIVE) != 0) &&
         dev->open_count != 0) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         ELIB_DRV_LOG("[elib_drv] W: %s open failed (%d)", dev->desc->name,
                      -ELIB_DRV_ERR_BUSY);
         return -ELIB_DRV_ERR_BUSY;
@@ -47,14 +47,14 @@ int elib_drv_open(elib_drv_device_t *dev, uint32_t flags)
     if (dev->open_count == 0) {
         rc = (ops != NULL && ops->open != NULL) ? ops->open(dev, flags) : 0;
         if (rc < 0) {
-            elib_drv__unlock(dev->lock);
+            elib_drv_unlock_helper(dev->lock);
             ELIB_DRV_LOG("[elib_drv] E: %s open failed (%d)", dev->desc->name,
                          rc);
             return rc;
         }
     }
     dev->open_count++;
-    elib_drv__unlock(dev->lock);
+    elib_drv_unlock_helper(dev->lock);
     ELIB_DRV_LOG("[elib_drv] I: %s open", dev->desc->name);
     return 0;
 }
@@ -75,7 +75,7 @@ int elib_drv_close(elib_drv_device_t *dev)
         return rc;
     }
     if (dev->open_count == 0) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     dev->open_count--;
@@ -84,7 +84,7 @@ int elib_drv_close(elib_drv_device_t *dev)
     if (dev->open_count == 0 && ops != NULL && ops->close != NULL) {
         rc = ops->close(dev);
     }
-    elib_drv__unlock(dev->lock);
+    elib_drv_unlock_helper(dev->lock);
     if (rc < 0) {
         ELIB_DRV_LOG("[elib_drv] E: %s close failed (%d)", dev->desc->name,
                      rc);
@@ -116,16 +116,16 @@ int elib_drv_read(elib_drv_device_t *dev, void *buf, size_t len)
         return rc;
     }
     if (dev->open_count == 0) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     ops = dev->desc->ops;
     if (ops == NULL || ops->read == NULL) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = ops->read(dev, buf, len);
-    elib_drv__unlock(dev->lock);
+    elib_drv_unlock_helper(dev->lock);
     if (rc > (int)len) {
         return -ELIB_DRV_ERR_IO;
     }
@@ -154,16 +154,16 @@ int elib_drv_write(elib_drv_device_t *dev, const void *buf, size_t len)
         return rc;
     }
     if (dev->open_count == 0) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     ops = dev->desc->ops;
     if (ops == NULL || ops->write == NULL) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = ops->write(dev, buf, len);
-    elib_drv__unlock(dev->lock);
+    elib_drv_unlock_helper(dev->lock);
     if (rc > (int)len) {
         return -ELIB_DRV_ERR_IO;
     }
@@ -186,16 +186,16 @@ int elib_drv_ioctl(elib_drv_device_t *dev, uint32_t cmd, void *arg)
         return rc;
     }
     if (dev->open_count == 0) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     ops = dev->desc->ops;
     if (ops == NULL || ops->ioctl == NULL) {
-        elib_drv__unlock(dev->lock);
+        elib_drv_unlock_helper(dev->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = ops->ioctl(dev, cmd, arg);
-    elib_drv__unlock(dev->lock);
+    elib_drv_unlock_helper(dev->lock);
     return rc;
 }
 
@@ -210,7 +210,7 @@ static uint32_t controller_timeout(const elib_drv_controller_t *ctrl)
 
 static int lock_controller(elib_drv_controller_t *ctrl)
 {
-    int rc = elib_drv__lock(ctrl->lock, controller_timeout(ctrl));
+    int rc = elib_drv_lock_helper(ctrl->lock, controller_timeout(ctrl));
 
     if (rc != 0) {
         ELIB_DRV_LOG("[elib_drv] E: ctrl %s lock timeout", ctrl->desc->name);
@@ -237,14 +237,14 @@ int elib_drv_controller_open(elib_drv_controller_t *ctrl, uint32_t flags)
     if (ctrl->open_count == 0) {
         rc = (fops != NULL && fops->open != NULL) ? fops->open(ctrl, flags) : 0;
         if (rc < 0) {
-            elib_drv__unlock(ctrl->lock);
+            elib_drv_unlock_helper(ctrl->lock);
             ELIB_DRV_LOG("[elib_drv] E: ctrl %s open failed (%d)",
                          ctrl->desc->name, rc);
             return rc;
         }
     }
     ctrl->open_count++;
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     ELIB_DRV_LOG("[elib_drv] I: ctrl %s open", ctrl->desc->name);
     return 0;
 }
@@ -265,7 +265,7 @@ int elib_drv_controller_close(elib_drv_controller_t *ctrl)
         return rc;
     }
     if (ctrl->open_count == 0) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     ctrl->open_count--;
@@ -274,7 +274,7 @@ int elib_drv_controller_close(elib_drv_controller_t *ctrl)
     if (ctrl->open_count == 0 && fops != NULL && fops->close != NULL) {
         rc = fops->close(ctrl);
     }
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     if (rc < 0) {
         ELIB_DRV_LOG("[elib_drv] E: ctrl %s close failed (%d)",
                      ctrl->desc->name, rc);
@@ -306,16 +306,16 @@ int elib_drv_controller_read(elib_drv_controller_t *ctrl, void *buf, size_t len)
         return rc;
     }
     if (ctrl->open_count == 0) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     fops = ctrl->desc->fops;
     if (fops == NULL || fops->read == NULL) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = fops->read(ctrl, buf, len);
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     if (rc > (int)len) {
         return -ELIB_DRV_ERR_IO;
     }
@@ -345,16 +345,16 @@ int elib_drv_controller_write(elib_drv_controller_t *ctrl, const void *buf,
         return rc;
     }
     if (ctrl->open_count == 0) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     fops = ctrl->desc->fops;
     if (fops == NULL || fops->write == NULL) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = fops->write(ctrl, buf, len);
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     if (rc > (int)len) {
         return -ELIB_DRV_ERR_IO;
     }
@@ -378,16 +378,16 @@ int elib_drv_controller_ioctl(elib_drv_controller_t *ctrl, uint32_t cmd,
         return rc;
     }
     if (ctrl->open_count == 0) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_OPEN;
     }
     fops = ctrl->desc->fops;
     if (fops == NULL || fops->ioctl == NULL) {
-        elib_drv__unlock(ctrl->lock);
+        elib_drv_unlock_helper(ctrl->lock);
         return -ELIB_DRV_ERR_NOT_SUPPORTED;
     }
     rc = fops->ioctl(ctrl, cmd, arg);
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     return rc;
 }
 
@@ -445,7 +445,7 @@ int elib_drv_controller_lock(elib_drv_controller_t *ctrl, uint32_t timeout_ms)
     if (ctrl == NULL || ctrl->desc == NULL) {
         return -ELIB_DRV_ERR_INVALID_PARAM;
     }
-    rc = elib_drv__lock(ctrl->lock, timeout_ms);
+    rc = elib_drv_lock_helper(ctrl->lock, timeout_ms);
     if (rc != 0) {
         ELIB_DRV_LOG("[elib_drv] E: ctrl %s lock timeout", ctrl->desc->name);
     }
@@ -460,6 +460,6 @@ int elib_drv_controller_unlock(elib_drv_controller_t *ctrl)
     if (ctrl == NULL || ctrl->desc == NULL) {
         return -ELIB_DRV_ERR_INVALID_PARAM;
     }
-    elib_drv__unlock(ctrl->lock);
+    elib_drv_unlock_helper(ctrl->lock);
     return 0;
 }

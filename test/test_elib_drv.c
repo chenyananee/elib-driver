@@ -486,6 +486,105 @@ static const elib_drv_controller_ops_t g_ctrl_ops_with_child = {
     ctrl_init_with_child, ctrl_deinit
 };
 
+/* A failing init that registers an unbound device first: the rollback must
+ * release it even though it is not bound to the controller. */
+static int ctrl_init_register_orphan(elib_drv_controller_t *ctrl)
+{
+    elib_drv_device_desc_t desc = make_dev_desc("orphan", &g_rt_state, NULL);
+
+    (void)ctrl;
+    (void)elib_drv_register_device(&desc, NULL);
+    return -ELIB_DRV_ERR_IO;
+}
+
+static const elib_drv_controller_ops_t g_ctrl_ops_orphan = {
+    ctrl_init_register_orphan, NULL
+};
+
+/* An init hook that tries to tear the manager down while init is running. */
+static int g_deinit_during_init_rc;
+
+static int ctrl_init_deinit(elib_drv_controller_t *ctrl)
+{
+    (void)ctrl;
+    g_deinit_during_init_rc = elib_drv_deinit();
+    return 0;
+}
+
+static const elib_drv_controller_ops_t g_ctrl_ops_deinit_inside = {
+    ctrl_init_deinit, NULL
+};
+
+/* An init hook that tries to unregister itself while its init is running. */
+static int g_self_unregister_rc;
+
+static int ctrl_init_unregister_self(elib_drv_controller_t *ctrl)
+{
+    g_self_unregister_rc = elib_drv_unregister_controller(ctrl);
+    return 0;
+}
+
+static const elib_drv_controller_ops_t g_ctrl_ops_unregister_self = {
+    ctrl_init_unregister_self, NULL
+};
+
+/* Records the order in which controllers are torn down. */
+static int g_rev_order[2];
+static int g_rev_count;
+
+static int rev_init(elib_drv_controller_t *ctrl)
+{
+    (void)ctrl;
+    return 0;
+}
+
+static int rev_deinit_one(elib_drv_controller_t *ctrl)
+{
+    (void)ctrl;
+    g_rev_order[g_rev_count++] = 1;
+    return 0;
+}
+
+static int rev_deinit_two(elib_drv_controller_t *ctrl)
+{
+    (void)ctrl;
+    g_rev_order[g_rev_count++] = 2;
+    return 0;
+}
+
+static const elib_drv_controller_ops_t g_rev_ops_one = {
+    rev_init, rev_deinit_one
+};
+static const elib_drv_controller_ops_t g_rev_ops_two = {
+    rev_init, rev_deinit_two
+};
+
+static const elib_drv_controller_desc_t g_self_fail_ctrls[] = {
+    { .name = "self_fail", .ops = &g_ctrl_ops, .fops = &g_ctrl_fops,
+      .priv = &g_rt_ctrl_state, .ctx = &g_ctrl_ctx[2] },
+};
+static const elib_drv_controller_desc_t g_deinit_inside_ctrls[] = {
+    { .name = "deinit_inside", .ops = &g_ctrl_ops_deinit_inside,
+      .priv = NULL, .ctx = &g_ctrl_ctx[2] },
+};
+static const elib_drv_controller_desc_t g_rev_ctrls[] = {
+    { .name = "rev1", .ops = &g_rev_ops_one, .priv = NULL,
+      .ctx = &g_ctrl_ctx[2] },
+    { .name = "rev2", .ops = &g_rev_ops_two, .priv = NULL,
+      .ctx = &g_ctrl_ctx[3] },
+};
+
+static elib_drv_config_t make_config(const elib_drv_controller_desc_t *ctrls,
+                                     unsigned count)
+{
+    elib_drv_config_t cfg;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.controllers = ctrls;
+    cfg.controller_count = count;
+    return cfg;
+}
+
 static int count_devices(elib_drv_device_t *dev, void *arg)
 {
     int *count = (int *)arg;
@@ -654,6 +753,19 @@ static void test_init_twice(void)
     harness_end();
 }
 
+static void test_deinit_during_init(void)
+{
+    elib_drv_config_t cfg = make_config(
+        g_deinit_inside_ctrls, ELIB_DRV_ARRAY_SIZE(g_deinit_inside_ctrls));
+
+    harness_begin();
+    g_deinit_during_init_rc = 0;
+    CHECK_EQ(elib_drv_init(NULL, &cfg), 0);
+    CHECK_EQ(g_deinit_during_init_rc, -ELIB_DRV_ERR_BUSY);
+    CHECK_EQ(elib_drv_deinit(), 0);
+    harness_end();
+}
+
 static void test_api_before_init(void)
 {
     unsigned char buf[4];
@@ -757,6 +869,37 @@ static void test_controller_init_failure_rolls_back(void)
     CHECK_EQ(elib_drv_deinit(), -ELIB_DRV_ERR_NOT_INITIALIZED);
     g_ctrl_state.init_rc = 0;
     CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    harness_end();
+}
+
+static void test_controller_init_failure_closes_direct(void)
+{
+    elib_drv_config_t cfg = make_config(g_self_fail_ctrls,
+                                        ELIB_DRV_ARRAY_SIZE(g_self_fail_ctrls));
+
+    harness_begin();
+    g_rt_ctrl_state.open_self_on_init = 1;
+    g_rt_ctrl_state.init_rc = -ELIB_DRV_ERR_IO;
+    CHECK_EQ(elib_drv_init(&g_port, &cfg), -ELIB_DRV_ERR_IO);
+    CHECK_EQ(g_rt_ctrl_state.open_calls, 1);
+    CHECK_EQ(g_rt_ctrl_state.close_calls, 1);
+    CHECK(g_ctrl_ctx[2].desc == NULL);
+    CHECK_EQ(elib_drv_deinit(), -ELIB_DRV_ERR_NOT_INITIALIZED);
+    harness_end();
+}
+
+static void test_teardown_reverse_order(void)
+{
+    elib_drv_config_t cfg = make_config(g_rev_ctrls,
+                                        ELIB_DRV_ARRAY_SIZE(g_rev_ctrls));
+
+    harness_begin();
+    CHECK_EQ(elib_drv_init(NULL, &cfg), 0);
+    g_rev_count = 0;
+    CHECK_EQ(elib_drv_deinit(), 0);
+    CHECK_EQ(g_rev_count, 2);
+    CHECK_EQ(g_rev_order[0], 2);
+    CHECK_EQ(g_rev_order[1], 1);
     harness_end();
 }
 
@@ -1446,6 +1589,28 @@ static void test_runtime_controller_init_cleans_children(void)
     harness_end();
 }
 
+static void test_runtime_init_failure_releases_all_devices(void)
+{
+    elib_drv_config_t cfg = g_cfg;
+    elib_drv_device_desc_t keep = make_dev_desc("keep", &g_rt_state, "i2c1");
+    elib_drv_device_t *keep_dev = NULL;
+    elib_drv_controller_desc_t bad;
+
+    memset(&bad, 0, sizeof bad);
+    bad.name = "bad";
+    bad.ops = &g_ctrl_ops_orphan;
+    bad.priv = &g_rt_ctrl_state;
+
+    harness_begin();
+    CHECK_EQ(elib_drv_init(&g_port, &cfg), 0);
+    CHECK_EQ(elib_drv_register_device(&keep, &keep_dev), 0);
+    CHECK_EQ(elib_drv_register_controller(&bad, NULL), -ELIB_DRV_ERR_IO);
+    CHECK(elib_drv_device_find("orphan") == NULL);
+    CHECK(elib_drv_device_find("keep") == keep_dev);
+    CHECK_EQ(elib_drv_unregister_device(keep_dev), 0);
+    harness_end();
+}
+
 static void test_runtime_device_slots_exhausted(void)
 {
     static const char *const names[] = { "r0", "r1", "r2", "r3", "r4" };
@@ -1516,6 +1681,50 @@ static void test_unregister_then_reuse_slot(void)
 
 static unsigned char g_tiny_mem[1];
 static unsigned char g_raw_mem[1024];
+
+static void test_unregister_twice_rejected(void)
+{
+    elib_drv_config_t cfg = g_cfg;
+    elib_drv_device_desc_t d = make_dev_desc("twice", &g_rt_state, "i2c1");
+    elib_drv_device_t *dev = NULL;
+    elib_drv_controller_desc_t c;
+    elib_drv_controller_t *ctrl = NULL;
+
+    memset(&c, 0, sizeof c);
+    c.name = "twice_ctrl";
+    c.ops = &g_ctrl_ops;
+    c.priv = &g_rt_ctrl_state;
+
+    harness_begin();
+    CHECK_EQ(elib_drv_init(&g_port, &cfg), 0);
+    CHECK_EQ(elib_drv_register_controller(&c, &ctrl), 0);
+    CHECK_EQ(elib_drv_unregister_controller(ctrl), 0);
+    CHECK_EQ(elib_drv_unregister_controller(ctrl),
+             -ELIB_DRV_ERR_INVALID_PARAM);
+    CHECK_EQ(elib_drv_register_device(&d, &dev), 0);
+    CHECK_EQ(elib_drv_unregister_device(dev), 0);
+    CHECK_EQ(elib_drv_unregister_device(dev), -ELIB_DRV_ERR_INVALID_PARAM);
+    harness_end();
+}
+
+static void test_unregister_during_init_rejected(void)
+{
+    elib_drv_config_t cfg = g_cfg;
+    elib_drv_controller_desc_t c;
+    elib_drv_controller_t *ctrl = NULL;
+
+    memset(&c, 0, sizeof c);
+    c.name = "self_unreg";
+    c.ops = &g_ctrl_ops_unregister_self;
+
+    harness_begin();
+    CHECK_EQ(elib_drv_init(&g_port, &cfg), 0);
+    g_self_unregister_rc = 0;
+    CHECK_EQ(elib_drv_register_controller(&c, &ctrl), 0);
+    CHECK_EQ(g_self_unregister_rc, -ELIB_DRV_ERR_BUSY);
+    CHECK_EQ(elib_drv_unregister_controller(ctrl), 0);
+    harness_end();
+}
 
 static void test_runtime_tiny_and_unaligned(void)
 {
@@ -1681,12 +1890,15 @@ int main(void)
     RUN_TEST(test_init_null_ctx);
     RUN_TEST(test_init_unknown_controller);
     RUN_TEST(test_init_twice);
+    RUN_TEST(test_deinit_during_init);
     RUN_TEST(test_api_before_init);
     RUN_TEST(test_deinit_busy);
     RUN_TEST(test_deinit_destroys_locks);
     RUN_TEST(test_deinit_reports_controller_error);
     RUN_TEST(test_lock_create_failure_rolls_back);
     RUN_TEST(test_controller_init_failure_rolls_back);
+    RUN_TEST(test_controller_init_failure_closes_direct);
+    RUN_TEST(test_teardown_reverse_order);
     RUN_TEST(test_find);
     RUN_TEST(test_foreach);
     RUN_TEST(test_open_close_refcount);
@@ -1718,10 +1930,13 @@ int main(void)
     RUN_TEST(test_register_unknown_controller);
     RUN_TEST(test_runtime_controller_lifecycle);
     RUN_TEST(test_runtime_controller_init_cleans_children);
+    RUN_TEST(test_runtime_init_failure_releases_all_devices);
     RUN_TEST(test_runtime_device_slots_exhausted);
     RUN_TEST(test_unregister_open_device_busy);
     RUN_TEST(test_unregister_static_not_supported);
     RUN_TEST(test_unregister_then_reuse_slot);
+    RUN_TEST(test_unregister_twice_rejected);
+    RUN_TEST(test_unregister_during_init_rejected);
     RUN_TEST(test_runtime_tiny_and_unaligned);
 #if LOG_TESTS
     RUN_TEST(test_log_flow);

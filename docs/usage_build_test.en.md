@@ -96,11 +96,11 @@ MT ALL PASSED (300000 hardware ops, 1 exclusive winner)
 
 | Area | Covered |
 |---|---|
-| init / deinit | static wiring, NULL port, invalid config, duplicates, null ctx, unknown controller, double init, deinit BUSY, rollback, deinit error propagation |
+| init / deinit | static wiring, NULL port, invalid config, duplicates, null ctx, unknown controller, double init, deinit rejected during init, reverse teardown, failing controller direct-close, deinit BUSY, rollback, deinit error propagation |
 | lookup / iteration | `find`, `foreach` order and early stop |
 | device I/O | reference counting, EXCLUSIVE, open failure, not open, argument/result checks, NOT_SUPPORTED, I/O not logged, lock timeout |
 | direct controller | reference counting, I/O, not open, no fops, argument/result checks, lock held, BUSY, rollback, accessors |
-| runtime table | no slot, register/unregister, duplicates, unknown controller, slot reuse, unaligned/tiny cache, init child cleanup, slot exhaustion |
+| runtime table | no slot, register/unregister, double unregister rejected, self-unregister during init rejected, duplicates, unknown controller, slot reuse, unaligned/tiny cache, init child and unbound-device cleanup, slot exhaustion |
 | logging | flow lines, disable, deinit retention, registration failure logs, direct logs |
 | bounds | context size upper bounds, NULL-safe accessors |
 

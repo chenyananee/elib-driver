@@ -42,29 +42,31 @@ elib_drv_init(port, cfg)
 | Port validation | manager untouched | `-ELIB_DRV_ERR_INVALID_PARAM` |
 | Config validation | manager untouched | `INVALID_PARAM` / `ALREADY_EXIST` / `NOT_FOUND` |
 | Lock creation | all created locks destroyed, static ctx cleared, no `ops` called | `-ELIB_DRV_ERR_LOCK` |
-| Controller `ops->init` | runtime devices and runtime controllers released, all locks destroyed; controllers that **did** init are `deinit`ed, the one that **failed is not** | that `ops->init` return value |
+| Controller `ops->init` | every runtime device registered during the init (whatever controller it bound) is released, the failing controller's direct open is closed, all locks are destroyed; controllers that **did** init are `deinit`ed, the one that **failed is not** | that `ops->init` return value |
 | Success | none | `0` |
 
-> A failing `ops->init` must clean up its own half-done initialization, including any direct open it made; the framework only releases the runtime devices it registered and destroys its lock.
+> A failing `ops->init` must still clean up hardware state and direct opens made on other controllers; the framework releases every runtime device registered during that init, closes the failing controller's direct open and destroys its lock (on a static init failure, direct opens of the remaining uninitialized controllers are closed as well).
 
 ## Deinit flow
 
-`elib_drv_deinit` performs four BUSY checks and then runs the teardown:
+`elib_drv_deinit` first refuses to run while an `init` is still in progress, then performs four BUSY checks and runs the teardown:
 
 | Check | Condition |
 |---|---|
+| init in progress | `initializing` is non-zero, return `-ELIB_DRV_ERR_BUSY` immediately |
 | Static device | `open_count != 0` |
 | Runtime device slot | `desc != NULL && open_count != 0` |
 | Static controller | `open_count != 0` (direct) |
 | Runtime controller slot | `desc != NULL && open_count != 0` (direct) |
+| Controller unregisters itself | calling `elib_drv_unregister_controller` from that controller's `ops->init` returns `-BUSY` |
 
-The teardown order is fixed:
+The teardown order is fixed and runs in **reverse** registration/array order:
 
-1. Release static devices (calling `ops->close` when needed);
-2. Release runtime device slots;
-3. Release runtime controller slots (close direct, call `ops->deinit`, destroy the lock);
-4. Release static controllers (same as above);
-5. `memset` the manager but **keep the log callback**, and return the first `ops->deinit` error.
+1. Release static devices in reverse (calling `ops->close` when needed);
+2. Release runtime device slots in reverse;
+3. Release runtime controller slots in reverse (close direct, call `ops->deinit`, destroy the lock);
+4. Release static controllers in reverse (successfully initialized ones call `deinit`; the rest close a direct open first, then destroy the lock);
+5. `memset` the manager but **keep the log callback**, and return the first `ops->close` / `ops->deinit` error.
 
 Deinit releases everything it can: even when one `ops->deinit` fails, the remaining controllers are still released and the caller receives the first error code.
 
@@ -78,7 +80,7 @@ Deinit releases everything it can: even when one `ops->deinit` fails, the remain
 | `ELIB_DRV_ERR_NOT_FOUND` | a device `controller` name does not resolve |
 | `ELIB_DRV_ERR_LOCK` | `mutex_create` returned `NULL` |
 | `ELIB_DRV_ERR_NOT_INITIALIZED` | any API used before init, or deinit twice |
-| `ELIB_DRV_ERR_BUSY` | deinit while a device or a direct controller open is still active |
+| `ELIB_DRV_ERR_BUSY` | deinit while a device or a direct controller open is still active, or while init is still running; a controller unregistering itself from its own `init` |
 | Controller `ops->init` error | passed through unchanged (negative) |
 
 ## Example

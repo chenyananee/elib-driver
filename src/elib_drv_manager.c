@@ -8,7 +8,7 @@ elib_drv_manager_t elib_drv_g_manager;
 
 /* ---- lock helpers ------------------------------------------------------ */
 
-int elib_drv__lock(void *lock, uint32_t timeout_ms)
+int elib_drv_lock_helper(void *lock, uint32_t timeout_ms)
 {
     const elib_drv_port_t *port = elib_drv_g_manager.port;
 
@@ -18,7 +18,7 @@ int elib_drv__lock(void *lock, uint32_t timeout_ms)
     return (port->mutex_lock(lock, timeout_ms) == 0) ? 0 : -ELIB_DRV_ERR_LOCK;
 }
 
-void elib_drv__unlock(void *lock)
+void elib_drv_unlock_helper(void *lock)
 {
     const elib_drv_port_t *port = elib_drv_g_manager.port;
 
@@ -210,15 +210,21 @@ static void destroy_lock(const elib_drv_manager_t *m, void **lock)
     }
 }
 
-static void release_device(const elib_drv_manager_t *m, elib_drv_device_t *ctx)
+static int release_device(const elib_drv_manager_t *m, elib_drv_device_t *ctx)
 {
     const elib_drv_ops_t *ops = (ctx->desc != NULL) ? ctx->desc->ops : NULL;
+    int rc = 0;
 
     if (ctx->open_count != 0 && ops != NULL && ops->close != NULL) {
-        (void)ops->close(ctx);
+        rc = ops->close(ctx);
+        if (rc < 0) {
+            ELIB_DRV_LOG("[elib_drv] E: %s close failed (%d)",
+                         ctx->desc->name, rc);
+        }
     }
     destroy_lock(m, &ctx->lock);
     (void)memset(ctx, 0, sizeof(*ctx));
+    return rc;
 }
 
 /* Rollback path only: a normal deinit refuses while a direct open exists.
@@ -229,7 +235,12 @@ static void close_controller_direct(elib_drv_controller_t *ctx)
         (ctx->desc != NULL) ? ctx->desc->fops : NULL;
 
     if (ctx->open_count != 0 && fops != NULL && fops->close != NULL) {
-        (void)fops->close(ctx);
+        int rc = fops->close(ctx);
+
+        if (rc < 0) {
+            ELIB_DRV_LOG("[elib_drv] E: ctrl %s close failed (%d)",
+                         ctx->desc->name, rc);
+        }
     }
     ctx->open_count = 0;
 }
@@ -244,25 +255,32 @@ static int release_controller(const elib_drv_manager_t *m,
     close_controller_direct(ctx);
     if (ops != NULL && ops->deinit != NULL) {
         rc = ops->deinit(ctx);
+        if (rc < 0) {
+            ELIB_DRV_LOG("[elib_drv] E: ctrl %s deinit failed (%d)",
+                         ctx->desc->name, rc);
+        }
     }
     destroy_lock(m, &ctx->lock);
     (void)memset(ctx, 0, sizeof(*ctx));
     return rc;
 }
 
-/* A controller that is being discarded may already own runtime devices (its
- * init hook is allowed to register children before failing). Release them
- * first so no descriptor keeps pointing at a freed slot. */
-static void release_bound_devices(elib_drv_manager_t *m,
-                                  elib_drv_controller_t *ctrl)
+/* A controller that is being discarded may have registered runtime devices
+ * during its init (bound to itself, to another controller, or unbound).
+ * Release every slot registered while `epoch` was active, plus any slot still
+ * bound to the controller, so no descriptor survives the failed init. */
+static void release_registered_devices(elib_drv_manager_t *m,
+                                       elib_drv_controller_t *ctrl,
+                                       uint32_t epoch)
 {
     unsigned i;
 
     for (i = 0; i < m->dev_capacity; i++) {
         elib_drv_device_slot_t *slot = &m->dev_slots[i];
 
-        if (slot->ctx.desc != NULL && slot->ctx.controller == ctrl) {
-            release_device(m, &slot->ctx);
+        if (slot->ctx.desc != NULL &&
+            (slot->ctx.reserved == epoch || slot->ctx.controller == ctrl)) {
+            (void)release_device(m, &slot->ctx);
             (void)memset(slot, 0, sizeof(*slot));
         }
     }
@@ -277,16 +295,22 @@ static int teardown(elib_drv_manager_t *m, unsigned inited_static_ctrls)
     int first = 0;
     int rc;
 
-    for (i = 0; i < m->device_count; i++) {
-        release_device(m, m->devices[i].ctx);
+    for (i = m->device_count; i-- > 0;) {
+        rc = release_device(m, m->devices[i].ctx);
+        if (rc < 0 && first == 0) {
+            first = rc;
+        }
     }
-    for (i = 0; i < m->dev_capacity; i++) {
+    for (i = m->dev_capacity; i-- > 0;) {
         if (m->dev_slots[i].ctx.desc != NULL) {
-            release_device(m, &m->dev_slots[i].ctx);
+            rc = release_device(m, &m->dev_slots[i].ctx);
+            if (rc < 0 && first == 0) {
+                first = rc;
+            }
             (void)memset(&m->dev_slots[i], 0, sizeof(m->dev_slots[i]));
         }
     }
-    for (i = 0; i < m->ctrl_capacity; i++) {
+    for (i = m->ctrl_capacity; i-- > 0;) {
         if (m->ctrl_slots[i].ctx.desc != NULL) {
             rc = release_controller(m, &m->ctrl_slots[i].ctx);
             if (rc < 0 && first == 0) {
@@ -295,7 +319,10 @@ static int teardown(elib_drv_manager_t *m, unsigned inited_static_ctrls)
             (void)memset(&m->ctrl_slots[i], 0, sizeof(m->ctrl_slots[i]));
         }
     }
-    for (i = 0; i < m->controller_count; i++) {
+    /* Reverse order: a controller initialized later may depend on an earlier
+     * one. Controllers that never finished init still get their direct opens
+     * closed before the context is discarded. */
+    for (i = m->controller_count; i-- > 0;) {
         elib_drv_controller_t *ctx = m->controllers[i].ctx;
 
         if (i < inited_static_ctrls) {
@@ -304,6 +331,7 @@ static int teardown(elib_drv_manager_t *m, unsigned inited_static_ctrls)
                 first = rc;
             }
         } else {
+            close_controller_direct(ctx);
             destroy_lock(m, &ctx->lock);
             (void)memset(ctx, 0, sizeof(*ctx));
         }
@@ -413,13 +441,16 @@ int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config)
     }
 
     m->initialized = 1;
+    m->initializing = 1;
 
     for (i = 0; i < m->controller_count; i++) {
         elib_drv_controller_t *ctx = m->controllers[i].ctx;
         const elib_drv_controller_ops_t *ops = ctx->desc->ops;
 
         if (ops != NULL && ops->init != NULL) {
+            m->initializing_ctrl = ctx;
             rc = ops->init(ctx);
+            m->initializing_ctrl = NULL;
             if (rc < 0) {
                 ELIB_DRV_LOG("[elib_drv] E: ctrl %s init failed (%d)",
                              ctx->desc->name, rc);
@@ -430,6 +461,7 @@ int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config)
         inited++;
     }
 
+    m->initializing = 0;
     ELIB_DRV_LOG("[elib_drv] I: init ok");
     return 0;
 }
@@ -441,6 +473,10 @@ int elib_drv_deinit(void)
 
     if (!m->initialized) {
         return -ELIB_DRV_ERR_NOT_INITIALIZED;
+    }
+    if (m->initializing) {
+        ELIB_DRV_LOG("[elib_drv] W: deinit during init");
+        return -ELIB_DRV_ERR_BUSY;
     }
     for (i = 0; i < m->device_count; i++) {
         if (m->devices[i].ctx->open_count != 0) {
@@ -562,6 +598,9 @@ int elib_drv_register_controller(const elib_drv_controller_desc_t *desc,
 {
     elib_drv_manager_t *m = &elib_drv_g_manager;
     elib_drv_controller_slot_t *slot;
+    elib_drv_controller_t *saved_init_ctrl;
+    uint32_t saved_epoch;
+    uint32_t epoch;
     int rc;
 
     if (!m->initialized) {
@@ -599,18 +638,32 @@ int elib_drv_register_controller(const elib_drv_controller_desc_t *desc,
             return -ELIB_DRV_ERR_LOCK;
         }
     }
+    saved_epoch = m->active_epoch;
+    epoch = m->epoch_counter + 1u;
+    if (epoch == 0u) {
+        epoch = 1u;
+    }
+    m->epoch_counter = epoch;
+    m->active_epoch = epoch;
+
     if (slot->desc.ops != NULL && slot->desc.ops->init != NULL) {
+        saved_init_ctrl = m->initializing_ctrl;
+        m->initializing_ctrl = &slot->ctx;
         rc = slot->desc.ops->init(&slot->ctx);
         if (rc < 0) {
-            release_bound_devices(m, &slot->ctx);
+            release_registered_devices(m, &slot->ctx, epoch);
             close_controller_direct(&slot->ctx);
             destroy_lock(m, &slot->ctx.lock);
+            m->initializing_ctrl = saved_init_ctrl;
+            m->active_epoch = saved_epoch;
             (void)memset(slot, 0, sizeof(*slot));
             ELIB_DRV_LOG("[elib_drv] E: ctrl %s init failed (%d)", desc->name,
                          rc);
             return rc;
         }
+        m->initializing_ctrl = saved_init_ctrl;
     }
+    m->active_epoch = saved_epoch;
 
     ELIB_DRV_LOG("[elib_drv] I: ctrl %s registered", desc->name);
     if (out != NULL) {
@@ -659,6 +712,8 @@ int elib_drv_register_device(const elib_drv_device_desc_t *desc,
     slot->ctx.lock = NULL;
     slot->ctx.controller = ctrl;
     slot->ctx.open_count = 0;
+    slot->ctx.reserved = m->active_epoch;
+    slot->desc.controller = NULL;   /* resolved once, do not retain the name */
 
     if (m->port != NULL) {
         slot->ctx.lock = m->port->mutex_create(slot->desc.name);
@@ -725,8 +780,13 @@ int elib_drv_unregister_controller(elib_drv_controller_t *ctrl)
             return -ELIB_DRV_ERR_NOT_SUPPORTED;
         }
     }
+    if (ctrl == m->initializing_ctrl) {
+        ELIB_DRV_LOG("[elib_drv] W: ctrl %s unregister during init",
+                     ctrl->desc->name);
+        return -ELIB_DRV_ERR_BUSY;
+    }
     slot = ctrl_slot_owned(m, ctrl);
-    if (slot == NULL) {
+    if (slot == NULL || slot->ctx.desc == NULL) {
         return -ELIB_DRV_ERR_INVALID_PARAM;
     }
     if (ctrl->open_count != 0) {
@@ -773,7 +833,7 @@ int elib_drv_unregister_device(elib_drv_device_t *dev)
         }
     }
     slot = dev_slot_owned(m, dev);
-    if (slot == NULL) {
+    if (slot == NULL || slot->ctx.desc == NULL) {
         return -ELIB_DRV_ERR_INVALID_PARAM;
     }
     if (dev->open_count != 0) {

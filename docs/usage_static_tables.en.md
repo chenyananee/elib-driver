@@ -60,7 +60,7 @@ static const elib_drv_config_t cfg = {
 
 ## Memory cost
 
-- 32-bit targets: `elib_drv_controller_t` 12 B, `elib_drv_device_t` 16 B (excluding the mutex itself, which the port owns).
+- 32-bit targets: `elib_drv_controller_t` 16 B, `elib_drv_device_t` 20 B (excluding the mutex itself, which the port owns).
 - 64-bit targets: `elib_drv_controller_t` 24 B, `elib_drv_device_t` 32 B.
 - Descriptors cost flash only; RAM holds one `ctx` per entry.
 

@@ -105,7 +105,8 @@ elib_drv_init(&port, &cfg);                  /* port = NULL 即裸机 */
 
 - 描述符只读：库内所有描述符参数都是 `const *`，写描述符的代码直接编译失败。
 - 每个表项必须自带 `ctx`；`ctx` 的字段由框架维护，调用方不得写入。
-- RAM 成本：32 位下 device 上下文 16 B、controller 12 B（64 位为 32/24 B）。
+- RAM 成本：32 位下 device 上下文 20 B、controller 16 B（64 位为 32/24 B）。
+- `port`、描述符表与运行时缓存必须比 manager 长寿（通常用静态存储）；`config` 结构本身可以放在栈上。
 
 ### 运行时表：用户给缓存，容量自动算
 
@@ -138,6 +139,8 @@ elib_drv_unregister_device(dev);         /* 运行期移除，槽位可复用 */
   `desc.controller` 只在注册调用期间用于按名字解析。
 - 静态表项不可注销（返回 `-ELIB_DRV_ERR_NOT_SUPPORTED`）；静态设备只能绑定
   静态 controller，运行时设备可绑定两者。
+- 注销后的运行时句柄立即失效：重复注销返回 `-ELIB_DRV_ERR_INVALID_PARAM`，
+  槽位被复用后不得再用旧句柄。
 
 ### 注册组合矩阵
 
@@ -318,7 +321,7 @@ elib_drv_controller_close(uart);
 | `ELIB_DRV_ERR_ALREADY_EXIST` | 静态表内或与运行时表重名 |
 | `ELIB_DRV_ERR_NOT_FOUND` | 按名字找不到 controller |
 | `ELIB_DRV_ERR_NO_SLOT` | 运行时表不存在或已满 |
-| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备或直连打开的 controller；unregister_controller 时仍有打开的设备/直连打开，或仍绑定设备 |
+| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备或直连打开的 controller，或 init 仍在执行；unregister_controller 时仍有打开的设备/直连打开、仍绑定设备，或在其 init 内注销自身 |
 | `ELIB_DRV_ERR_NOT_OPEN` | 未打开就 read/write/ioctl |
 | `ELIB_DRV_ERR_NOT_SUPPORTED` | 对应 ops 为 `NULL`；或注销静态项 |
 | `ELIB_DRV_ERR_LOCK` | 建锁失败 / 加锁超时 |
