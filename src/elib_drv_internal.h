@@ -13,6 +13,7 @@ typedef struct {
     elib_drv_controller_t *initializing_ctrl; /* controller whose init runs */
     const elib_drv_port_t *port;
     elib_drv_log_fn log;
+    const char *log_eol;           /* "", "\n" or "\r\n" */
 
     const elib_drv_controller_desc_t *controllers;
     unsigned controller_count;
@@ -32,15 +33,33 @@ extern elib_drv_manager_t elib_drv_g_manager;
 int  elib_drv_lock_helper(void *lock, uint32_t timeout_ms);
 void elib_drv_unlock_helper(void *lock);
 
+/* fmt must be a string literal and ELIB_DRV_LOG needs at least one variadic
+ * argument. Messages without arguments use ELIB_DRV_LOG_PLAIN: both append
+ * the configured line ending through "%s", so the callback receives one
+ * complete line per record. */
 #if ELIB_DRV_LOG_ENABLE
-#define ELIB_DRV_LOG(...)                                              \
+#define ELIB_DRV_LOG(fmt, ...)                                         \
     do {                                                               \
         if (elib_drv_g_manager.log != NULL) {                          \
-            (void)elib_drv_g_manager.log(__VA_ARGS__);                 \
+            (void)elib_drv_g_manager.log(                              \
+                fmt "%s", __VA_ARGS__,                                 \
+                elib_drv_g_manager.log_eol != NULL                     \
+                    ? elib_drv_g_manager.log_eol : "");                \
+        }                                                              \
+    } while (0)
+
+#define ELIB_DRV_LOG_PLAIN(fmt)                                        \
+    do {                                                               \
+        if (elib_drv_g_manager.log != NULL) {                          \
+            (void)elib_drv_g_manager.log(                              \
+                fmt "%s",                                              \
+                elib_drv_g_manager.log_eol != NULL                     \
+                    ? elib_drv_g_manager.log_eol : "");                \
         }                                                              \
     } while (0)
 #else
-#define ELIB_DRV_LOG(...) ((void)0)
+#define ELIB_DRV_LOG(fmt, ...) ((void)0)
+#define ELIB_DRV_LOG_PLAIN(fmt) ((void)0)
 #endif
 
 #endif /* ELIB_DRV_INTERNAL_H */

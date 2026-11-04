@@ -17,7 +17,7 @@ an optional printf-style flow log.
 - Locking and logging are external interfaces; `NULL` port means bare metal
   with no locking and no log
 
-Current version: **0.2.0** (`ELIB_DRV_VERSION`), single header `include/elib_drv.h`.
+Current version: **0.3.0** (`ELIB_DRV_VERSION`), single header `include/elib_drv.h`.
 
 ## Features
 
@@ -42,8 +42,9 @@ Current version: **0.2.0** (`ELIB_DRV_VERSION`), single header `include/elib_drv
   threaded bare metal case
 - **Optional flow log**: register `printf` or any `int (*)(const char *, ...)`
   callback; the framework logs init/register/unregister/open/close/failures
-  **outside its locks**, never logs read/write/ioctl, and can be stripped with
-  `-DELIB_DRV_LOG_ENABLE=0`
+  **outside its locks**, never logs read/write/ioctl, can be stripped with
+  `-DELIB_DRV_LOG_ENABLE=0`, and appends `\n` (default), `\r\n` or nothing per
+  record
 
 ## Usage Docs
 
@@ -243,7 +244,7 @@ int app_start(void)
     unsigned char buf[16];
     int rc;
 
-    elib_drv_set_log(printf);            /* optional: printf directly */
+    elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* optional: printf directly */
     rc = elib_drv_init(NULL, &cfg);      /* bare metal; see port section */
     if (rc != 0) {
         return rc;
@@ -386,7 +387,7 @@ static int sensor_read(elib_drv_device_t *dev, void *buf, size_t len)
 ## Optional flow log
 
 ```c
-elib_drv_set_log(printf);                 /* simplest: printf directly */
+elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* simplest: printf directly */
 
 /* or your own UART/RTT logger */
 #include <stdarg.h>
@@ -400,7 +401,7 @@ static int uart_log(const char *fmt, ...)
     va_end(ap);
     return 0;
 }
-elib_drv_set_log(uart_log);
+elib_drv_set_log(uart_log, ELIB_DRV_LOG_NEWLINE_LF);
 ```
 
 - The framework always calls the callback **after releasing its locks**.
@@ -411,8 +412,16 @@ elib_drv_set_log(uart_log);
   register/unregister and their failure reasons, device open/close and
   failures, **direct controller open/close and failures**, deinit busy, lock
   timeouts. read/write/ioctl are never logged.
+- The line ending is chosen at configuration time:
+  `elib_drv_set_log(fn, newline)`, where `newline` is `0` (none),
+  `ELIB_DRV_LOG_NEWLINE_LF` (`\n`, recommended default) or
+  `ELIB_DRV_LOG_NEWLINE_CRLF` (`\r\n`). The setting survives
+  `init`/`deinit`; an invalid value returns `-ELIB_DRV_ERR_INVALID_PARAM`.
+- The callback receives a complete line (with the configured ending); do
+  **not** append your own `\n`, or you get blank lines.
 - Messages are `"[elib_drv] I|W|E: ..."` and only use `%s/%u/%d`.
-- `elib_drv_set_log(NULL)` disables logging; `deinit` keeps the callback.
+- `elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF)` disables logging; `deinit`
+  keeps the callback.
 - `-DELIB_DRV_LOG_ENABLE=0` strips every log call and format string at compile
   time (enabled by default).
 
@@ -460,7 +469,10 @@ unsigned    elib_drv_device_open_count(const elib_drv_device_t *);
 
 /* flow log */
 typedef int (*elib_drv_log_fn)(const char *fmt, ...);
-int elib_drv_set_log(elib_drv_log_fn fn);
+#define ELIB_DRV_LOG_NEWLINE_NONE  0u
+#define ELIB_DRV_LOG_NEWLINE_LF    1u
+#define ELIB_DRV_LOG_NEWLINE_CRLF  2u
+int elib_drv_set_log(elib_drv_log_fn fn, unsigned newline);
 ```
 
 `ioctl` commands are usually built with `ELIB_DRV_IOC(group, nr)` and declared

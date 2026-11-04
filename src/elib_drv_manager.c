@@ -291,6 +291,7 @@ static void release_registered_devices(elib_drv_manager_t *m,
 static int teardown(elib_drv_manager_t *m, unsigned inited_static_ctrls)
 {
     elib_drv_log_fn log = m->log;
+    const char *log_eol = m->log_eol;
     unsigned i;
     int first = 0;
     int rc;
@@ -338,6 +339,7 @@ static int teardown(elib_drv_manager_t *m, unsigned inited_static_ctrls)
     }
     (void)memset(m, 0, sizeof(*m));
     m->log = log;
+    m->log_eol = log_eol;
     return first;
 }
 
@@ -347,6 +349,7 @@ int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config)
 {
     elib_drv_manager_t *m = &elib_drv_g_manager;
     elib_drv_log_fn log = m->log;
+    const char *log_eol = m->log_eol;
     int rc;
     unsigned i;
     unsigned inited = 0;
@@ -364,6 +367,7 @@ int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config)
 
     (void)memset(m, 0, sizeof(*m));
     m->log = log;
+    m->log_eol = log_eol;
     m->port = port;
     m->controllers = config->controllers;
     m->controller_count = config->controller_count;
@@ -462,7 +466,7 @@ int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config)
     }
 
     m->initializing = 0;
-    ELIB_DRV_LOG("[elib_drv] I: init ok");
+    ELIB_DRV_LOG_PLAIN("[elib_drv] I: init ok");
     return 0;
 }
 
@@ -475,32 +479,32 @@ int elib_drv_deinit(void)
         return -ELIB_DRV_ERR_NOT_INITIALIZED;
     }
     if (m->initializing) {
-        ELIB_DRV_LOG("[elib_drv] W: deinit during init");
+        ELIB_DRV_LOG_PLAIN("[elib_drv] W: deinit during init");
         return -ELIB_DRV_ERR_BUSY;
     }
     for (i = 0; i < m->device_count; i++) {
         if (m->devices[i].ctx->open_count != 0) {
-            ELIB_DRV_LOG("[elib_drv] W: deinit busy");
+            ELIB_DRV_LOG_PLAIN("[elib_drv] W: deinit busy");
             return -ELIB_DRV_ERR_BUSY;
         }
     }
     for (i = 0; i < m->dev_capacity; i++) {
         if (m->dev_slots[i].ctx.desc != NULL &&
             m->dev_slots[i].ctx.open_count != 0) {
-            ELIB_DRV_LOG("[elib_drv] W: deinit busy");
+            ELIB_DRV_LOG_PLAIN("[elib_drv] W: deinit busy");
             return -ELIB_DRV_ERR_BUSY;
         }
     }
     for (i = 0; i < m->controller_count; i++) {
         if (m->controllers[i].ctx->open_count != 0) {
-            ELIB_DRV_LOG("[elib_drv] W: deinit busy");
+            ELIB_DRV_LOG_PLAIN("[elib_drv] W: deinit busy");
             return -ELIB_DRV_ERR_BUSY;
         }
     }
     for (i = 0; i < m->ctrl_capacity; i++) {
         if (m->ctrl_slots[i].ctx.desc != NULL &&
             m->ctrl_slots[i].ctx.open_count != 0) {
-            ELIB_DRV_LOG("[elib_drv] W: deinit busy");
+            ELIB_DRV_LOG_PLAIN("[elib_drv] W: deinit busy");
             return -ELIB_DRV_ERR_BUSY;
         }
     }
@@ -561,9 +565,26 @@ int elib_drv_device_foreach(int (*fn)(elib_drv_device_t *dev, void *arg),
 
 /* ---- flow log ---------------------------------------------------------- */
 
-int elib_drv_set_log(elib_drv_log_fn fn)
+int elib_drv_set_log(elib_drv_log_fn fn, unsigned newline)
 {
+    const char *eol;
+
+    switch (newline) {
+    case ELIB_DRV_LOG_NEWLINE_NONE:
+        eol = "";
+        break;
+    case ELIB_DRV_LOG_NEWLINE_LF:
+        eol = "\n";
+        break;
+    case ELIB_DRV_LOG_NEWLINE_CRLF:
+        eol = "\r\n";
+        break;
+    default:
+        return -ELIB_DRV_ERR_INVALID_PARAM;
+    }
+
     elib_drv_g_manager.log = fn;
+    elib_drv_g_manager.log_eol = eol;
     return 0;
 }
 

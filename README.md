@@ -12,7 +12,7 @@ printf 风格的流程日志。
 - 静态 `const` 描述符表 + 可选运行时槽位表（用户给缓存，容量自动推导）
 - 互斥锁与日志都通过接口外置，裸机传 `NULL` 即完全不锁、不打日志
 
-当前版本：**0.2.0**（`ELIB_DRV_VERSION`），单头 `include/elib_drv.h`。
+当前版本：**0.3.0**（`ELIB_DRV_VERSION`），单头 `include/elib_drv.h`。
 
 ## 特性
 
@@ -32,7 +32,8 @@ printf 风格的流程日志。
   不分配；`port == NULL` 即单线程裸机
 - **可选流程日志**：注册 `printf` 或任意 `int (*)(const char *, ...)`，框架在
   **锁外**打印 init / 注册 / 注销 / open / close / 失败等流程；read/write/ioctl
-  不打印，支持 `-DELIB_DRV_LOG_ENABLE=0` 整段裁掉
+  不打印，支持 `-DELIB_DRV_LOG_ENABLE=0` 整段裁掉；每条记录可配置追加
+  `\n`（默认）、`\r\n` 或什么都不加
 
 ## 用法文档
 
@@ -224,7 +225,7 @@ int app_start(void)
     unsigned char buf[16];
     int rc;
 
-    elib_drv_set_log(printf);            /* 可选：直接接 printf */
+    elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* 可选：直接接 printf */
     rc = elib_drv_init(NULL, &cfg);      /* 裸机；RTOS 见下节 */
     if (rc != 0) {
         return rc;
@@ -362,7 +363,7 @@ static int sensor_read(elib_drv_device_t *dev, void *buf, size_t len)
 ## 可选流程日志
 
 ```c
-elib_drv_set_log(printf);                 /* 最简单：直接接 printf */
+elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* 最简单：直接接 printf */
 
 /* 或者自己的串口/RTT logger */
 #include <stdarg.h>
@@ -376,7 +377,7 @@ static int uart_log(const char *fmt, ...)
     va_end(ap);
     return 0;
 }
-elib_drv_set_log(uart_log);
+elib_drv_set_log(uart_log, ELIB_DRV_LOG_NEWLINE_LF);
 ```
 
 - 框架只在 **释放锁之后** 调用日志回调，回调里不会持有框架锁。
@@ -385,8 +386,12 @@ elib_drv_set_log(uart_log);
 - 记录点：init 开始/成功/失败、controller init/deinit 与失败、注册/注销及失败
   原因、device 的 open/close 及失败、**controller 直连的 open/close 及失败**、
   deinit busy、锁超时。read/write/ioctl 不打印。
+- 行尾在设置时决定：`elib_drv_set_log(fn, newline)`，`newline` 取 `0`（不追加）、
+  `ELIB_DRV_LOG_NEWLINE_LF`（`\n`，默认推荐）或 `ELIB_DRV_LOG_NEWLINE_CRLF`（`\r\n`）；
+  设置在 `init`/`deinit` 后保留，非法值返回 `-ELIB_DRV_ERR_INVALID_PARAM`。
+- 回调收到的是完整一行（默认已带行尾），**不要**再自行追加 `\n`，否则会出现空行。
 - 消息格式固定为 `"[elib_drv] I|W|E: ..."`，只用 `%s/%u/%d`。
-- `elib_drv_set_log(NULL)` 关闭；`deinit` 不会清除已注册的回调。
+- `elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF)` 关闭；`deinit` 不会清除已注册的回调。
 - 编译时 `-DELIB_DRV_LOG_ENABLE=0` 可把全部日志调用与格式串裁掉（默认开启）。
 
 ## API
@@ -433,7 +438,10 @@ unsigned    elib_drv_device_open_count(const elib_drv_device_t *);
 
 /* 流程日志 */
 typedef int (*elib_drv_log_fn)(const char *fmt, ...);
-int elib_drv_set_log(elib_drv_log_fn fn);
+#define ELIB_DRV_LOG_NEWLINE_NONE  0u
+#define ELIB_DRV_LOG_NEWLINE_LF    1u
+#define ELIB_DRV_LOG_NEWLINE_CRLF  2u
+int elib_drv_set_log(elib_drv_log_fn fn, unsigned newline);
 ```
 
 `ioctl` 命令建议用 `ELIB_DRV_IOC(group, nr)` 生成，驱动私有命令定义在驱动

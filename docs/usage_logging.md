@@ -7,14 +7,27 @@
 ## 启用与关闭
 
 ```c
-elib_drv_set_log(printf);   /* 最简单：直接接 printf */
-elib_drv_set_log(my_log);   /* 或自己的 UART / RTT logger */
-elib_drv_set_log(NULL);     /* 关闭 */
+elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);    /* 默认：追加 '\n' */
+elib_drv_set_log(my_log, ELIB_DRV_LOG_NEWLINE_CRLF);  /* 串口常用："\r\n" */
+elib_drv_set_log(my_log, ELIB_DRV_LOG_NEWLINE_NONE);  /* 不追加行尾 */
+elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF);      /* 关闭输出 */
 ```
 
-- `elib_drv_set_log` 在任何时候都返回 0，可以在 `elib_drv_init` 之前调用。
-- 回调跨 `init` / `deinit` 保留：`deinit` 不会把它清掉，重新 init 后继续生效。
+- `newline` 非法时返回 `-ELIB_DRV_ERR_INVALID_PARAM`，且不改变当前回调与行尾配置。
+- 可以在 `elib_drv_init` 之前调用；回调与行尾配置跨 `init` / `deinit` 保留。
 - 回调为 `NULL` 时不产生任何日志调用；日志只依赖 manager 里的函数指针，不需要额外内存。
+
+## 行尾格式
+
+| 参数 | 追加内容 | 说明 |
+|---|---|---|
+| `ELIB_DRV_LOG_NEWLINE_NONE`（0） | 无 | 回调收到未终止的一行 |
+| `ELIB_DRV_LOG_NEWLINE_LF`（1） | `\n` | 默认推荐 |
+| `ELIB_DRV_LOG_NEWLINE_CRLF`（2） | `\r\n` | 串口终端常用 |
+
+- 行尾在设置时一起决定；每条记录只调用一次回调，回调收到完整一行。
+- 使用 LF/CRLF 时，日志回调**不要**再自行补换行，否则会多出空行。
+- 框架只追加 `\n` 或 `\r\n`，不做平台自动转换。
 
 ## 记录点
 
@@ -45,7 +58,7 @@ elib_drv_set_log(NULL);     /* 关闭 */
 
 - 固定前缀 `"[elib_drv] I|W|E: ..."`；`I` 信息、`W` 警告、`E` 错误。
 - 框架只用 `%s`、`%u`、`%d` 三种转换，名字与错误码都由框架传入。
-- 每条日志是一次单独的回调调用，回调返回值被忽略。
+- 每条日志是一次单独的回调调用，回调返回值被忽略；行尾由配置追加到同一次调用里。
 
 ## 线程与重入
 
@@ -61,7 +74,7 @@ gcc -std=c99 -Wall -Wextra -Werror -DELIB_DRV_LOG_ENABLE=0 \
     -Iinclude -c src/*.c
 ```
 
-- `ELIB_DRV_LOG_ENABLE=0` 会把全部日志调用与格式串裁掉，`elib_drv_set_log` 仍可调用但不再产生输出。
+- `ELIB_DRV_LOG_ENABLE=0` 会把全部日志调用与格式串裁掉，`elib_drv_set_log` 仍可调用（仍需传 `newline`）但不再产生输出。
 - 默认 `ELIB_DRV_LOG_ENABLE=1`；测试里的日志断言随该宏自动开关。
 
 ## 示例
@@ -87,7 +100,7 @@ static int uart_log(const char *fmt, ...)
 
 int app_boot(void)
 {
-    elib_drv_set_log(uart_log);          /* init 之前注册 */
+    elib_drv_set_log(uart_log, ELIB_DRV_LOG_NEWLINE_LF);  /* init 之前注册 */
     return elib_drv_init(NULL, &cfg);
 }
 ```

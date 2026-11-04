@@ -129,7 +129,7 @@ void app_shutdown(void)
 ## 注意事项
 
 - `init` 失败后可以重试；`deinit` 之后也可以重新 `init`（manager 已清零）。
-- `elib_drv_set_log` 可在 `init` 之前调用，`deinit` 不会清除回调。
+- `elib_drv_set_log` 可在 `init` 之前调用，`deinit` 不会清除回调与行尾配置。
 - controller 的 `ops->init` 内可以注册运行时设备，但不要在 `ops->init` 里调用 `elib_drv_deinit`。
 - deinit 的 BUSY 检查是无锁的，前提是 `init/deinit` 不与 I/O 并发（见[锁与并发](usage_locking.md)）。
 

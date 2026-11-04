@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define ELIB_DRV_VERSION "0.2.0"
+#define ELIB_DRV_VERSION "0.3.0"
 
 /* passed through to the port unchanged: wait for the mutex forever */
 #define ELIB_DRV_WAIT_FOREVER  UINT32_MAX
@@ -67,10 +67,19 @@ typedef enum {
  * The framework calls it outside its locks, only when it is not NULL, and
  * ignores the return value. It may be called from several tasks concurrently
  * (different devices), so the callback must be thread safe. It must not call
- * any elib_drv_* function. NULL disables logging. */
+ * any elib_drv_* function. NULL disables logging.
+ *
+ * elib_drv_set_log() also selects the line ending appended to every record:
+ * 0 = none, 1 = '\n' (recommended default), 2 = "\r\n". The callback receives
+ * the complete line, so a logger using the default must not append its own
+ * newline. The setting is kept across init/deinit. */
 typedef int (*elib_drv_log_fn)(const char *fmt, ...);
 
-int elib_drv_set_log(elib_drv_log_fn fn);
+#define ELIB_DRV_LOG_NEWLINE_NONE  0u
+#define ELIB_DRV_LOG_NEWLINE_LF    1u
+#define ELIB_DRV_LOG_NEWLINE_CRLF  2u
+
+int elib_drv_set_log(elib_drv_log_fn fn, unsigned newline);
 
 /* ---- handles and runtime contexts -------------------------------------- */
 

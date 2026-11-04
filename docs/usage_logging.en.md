@@ -7,14 +7,27 @@ The framework offers an optional printf-style flow log: register an `int (*)(con
 ## Enabling and disabling
 
 ```c
-elib_drv_set_log(printf);   /* simplest: printf itself */
-elib_drv_set_log(my_log);   /* or your own UART / RTT logger */
-elib_drv_set_log(NULL);     /* disable */
+elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);    /* default: append '\n' */
+elib_drv_set_log(my_log, ELIB_DRV_LOG_NEWLINE_CRLF);  /* serial: "\r\n" */
+elib_drv_set_log(my_log, ELIB_DRV_LOG_NEWLINE_NONE);  /* no line ending */
+elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF);      /* disable output */
 ```
 
-- `elib_drv_set_log` always returns 0 and may be called before `elib_drv_init`.
-- The callback survives `init` / `deinit`: `deinit` does not clear it, and it keeps working after a new init.
+- An invalid `newline` returns `-ELIB_DRV_ERR_INVALID_PARAM` and leaves the current callback and line ending unchanged.
+- It may be called before `elib_drv_init`; the callback and line-ending setting survive `init` / `deinit`.
 - A `NULL` callback produces no log calls at all; the log only costs one function pointer in the manager.
+
+## Line ending
+
+| Parameter | Appended | Notes |
+|---|---|---|
+| `ELIB_DRV_LOG_NEWLINE_NONE` (0) | nothing | the callback receives an unterminated line |
+| `ELIB_DRV_LOG_NEWLINE_LF` (1) | `\n` | recommended default |
+| `ELIB_DRV_LOG_NEWLINE_CRLF` (2) | `\r\n` | common for serial terminals |
+
+- The line ending is chosen at configuration time; each record calls the callback once and it receives a complete line.
+- With LF/CRLF, the logger must **not** append its own newline, or blank lines appear.
+- The framework appends exactly `\n` or `\r\n`; there is no platform translation.
 
 ## Log points
 
@@ -45,7 +58,7 @@ elib_drv_set_log(NULL);     /* disable */
 
 - Fixed prefix `"[elib_drv] I|W|E: ..."`; `I` info, `W` warning, `E` error.
 - The framework only uses `%s`, `%u` and `%d`; names and error codes are supplied by the framework.
-- Each line is one callback invocation; its return value is ignored.
+- Each line is one callback invocation; its return value is ignored, and the configured line ending is part of that same call.
 
 ## Threading and reentrancy
 
@@ -61,7 +74,7 @@ gcc -std=c99 -Wall -Wextra -Werror -DELIB_DRV_LOG_ENABLE=0 \
     -Iinclude -c src/*.c
 ```
 
-- `ELIB_DRV_LOG_ENABLE=0` strips every log call and format string; `elib_drv_set_log` remains callable but produces no output.
+- `ELIB_DRV_LOG_ENABLE=0` strips every log call and format string; `elib_drv_set_log` remains callable (still with `newline`) but produces no output.
 - The default is `ELIB_DRV_LOG_ENABLE=1`; the log assertions in the test suite follow that macro automatically.
 
 ## Example
@@ -87,7 +100,7 @@ static int uart_log(const char *fmt, ...)
 
 int app_boot(void)
 {
-    elib_drv_set_log(uart_log);          /* register before init */
+    elib_drv_set_log(uart_log, ELIB_DRV_LOG_NEWLINE_LF);  /* register before init */
     return elib_drv_init(NULL, &cfg);
 }
 ```

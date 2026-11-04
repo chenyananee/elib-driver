@@ -140,6 +140,39 @@ static int log_has(const char *needle)
     }
     return 0;
 }
+
+static int log_all_end_with(const char *suffix)
+{
+    size_t sl = strlen(suffix);
+    int i;
+
+    if (g_log_count == 0) {
+        return 0;
+    }
+    for (i = 0; i < g_log_count; i++) {
+        size_t n = strlen(g_log_lines[i]);
+
+        if (n < sl || memcmp(g_log_lines[i] + n - sl, suffix, sl) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int log_any_end_with(const char *suffix)
+{
+    size_t sl = strlen(suffix);
+    int i;
+
+    for (i = 0; i < g_log_count; i++) {
+        size_t n = strlen(g_log_lines[i]);
+
+        if (n >= sl && memcmp(g_log_lines[i] + n - sl, suffix, sl) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
 #else
 static int log_has(const char *needle)
 {
@@ -428,7 +461,7 @@ static void harness_reset(void)
     g_log_count = 0;
     g_log_max_depth = 0;
 
-    (void)elib_drv_set_log(fake_log);
+    (void)elib_drv_set_log(fake_log, ELIB_DRV_LOG_NEWLINE_LF);
 }
 
 static void harness_begin(void)
@@ -1786,7 +1819,7 @@ static void test_log_disabled(void)
     harness_begin();
     CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
     CHECK(g_log_count > 0);
-    (void)elib_drv_set_log(NULL);
+    (void)elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF);
     g_log_count = 0;
     dev = elib_drv_device_find("eeprom");
     CHECK_EQ(elib_drv_open(dev, 0), 0);
@@ -1839,6 +1872,64 @@ static void test_controller_direct_log(void)
     CHECK(log_has("ctrl i2c1 open"));
     CHECK(log_has("ctrl i2c1 close"));
     CHECK_EQ(g_log_max_depth, 0);
+    harness_end();
+}
+
+static void test_log_newline_default(void)
+{
+    harness_begin();
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK(log_all_end_with("\n"));
+    CHECK(!log_any_end_with("\r\n"));
+    CHECK_EQ(elib_drv_deinit(), 0);
+    harness_end();
+}
+
+static void test_log_newline_none(void)
+{
+    harness_begin();
+    CHECK_EQ(elib_drv_set_log(fake_log, 0), 0);
+    g_log_count = 0;
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK(g_log_count > 0);
+    CHECK(!log_any_end_with("\n"));
+    CHECK_EQ(elib_drv_deinit(), 0);
+    harness_end();
+}
+
+static void test_log_newline_crlf(void)
+{
+    harness_begin();
+    CHECK_EQ(elib_drv_set_log(fake_log, ELIB_DRV_LOG_NEWLINE_CRLF), 0);
+    g_log_count = 0;
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK(log_all_end_with("\r\n"));
+    CHECK_EQ(elib_drv_deinit(), 0);
+    harness_end();
+}
+
+static void test_log_newline_persists(void)
+{
+    harness_begin();
+    CHECK_EQ(elib_drv_set_log(fake_log, ELIB_DRV_LOG_NEWLINE_CRLF), 0);
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK_EQ(elib_drv_deinit(), 0);
+    g_log_count = 0;
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK(log_all_end_with("\r\n"));
+    CHECK_EQ(elib_drv_deinit(), 0);
+    harness_end();
+}
+
+static void test_log_newline_invalid(void)
+{
+    harness_begin();
+    CHECK_EQ(elib_drv_set_log(fake_log, 3u), -ELIB_DRV_ERR_INVALID_PARAM);
+    g_log_count = 0;
+    CHECK_EQ(elib_drv_init(&g_port, &g_cfg), 0);
+    CHECK(log_all_end_with("\n"));
+    CHECK(!log_any_end_with("\r\n"));
+    CHECK_EQ(elib_drv_deinit(), 0);
     harness_end();
 }
 
@@ -1940,6 +2031,11 @@ int main(void)
     RUN_TEST(test_runtime_tiny_and_unaligned);
 #if LOG_TESTS
     RUN_TEST(test_log_flow);
+    RUN_TEST(test_log_newline_default);
+    RUN_TEST(test_log_newline_none);
+    RUN_TEST(test_log_newline_crlf);
+    RUN_TEST(test_log_newline_persists);
+    RUN_TEST(test_log_newline_invalid);
     RUN_TEST(test_log_disabled);
     RUN_TEST(test_log_survives_deinit);
     RUN_TEST(test_log_register_failures);

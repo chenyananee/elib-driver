@@ -101,7 +101,7 @@ MT ALL PASSED (300000 hardware ops, 1 exclusive winner)
 | device I/O | reference counting, EXCLUSIVE, open failure, not open, argument/result checks, NOT_SUPPORTED, I/O not logged, lock timeout |
 | direct controller | reference counting, I/O, not open, no fops, argument/result checks, lock held, BUSY, rollback, accessors |
 | runtime table | no slot, register/unregister, double unregister rejected, self-unregister during init rejected, duplicates, unknown controller, slot reuse, unaligned/tiny cache, init child and unbound-device cleanup, slot exhaustion |
-| logging | flow lines, disable, deinit retention, registration failure logs, direct logs |
+| logging | flow lines, disable, LF/none/CRLF line endings, retention across init, invalid line-ending value, registration failure logs, direct logs |
 | bounds | context size upper bounds, NULL-safe accessors |
 
 ## Known limitations

@@ -129,7 +129,7 @@ void app_shutdown(void)
 ## Notes
 
 - `init` may be retried after a failure; `init` after `deinit` works too (the manager was cleared).
-- `elib_drv_set_log` may be called before `init`; `deinit` does not clear the callback.
+- `elib_drv_set_log` may be called before `init`; `deinit` does not clear the callback or the line-ending setting.
 - A controller's `ops->init` may register runtime devices, but it must not call `elib_drv_deinit`.
 - The deinit BUSY checks take no locks, which assumes `init/deinit` never run concurrently with I/O (see [Locking and Concurrency](usage_locking.en.md)).
 
