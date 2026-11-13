@@ -174,7 +174,8 @@ roots
 +- uart0 fops=&uart_fops ctx=&uart0_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(uart_children)
 |  `- rhsensor fops=&sensor_fops ctx=&sensor_cfg controller=uart0 lock_timeout_ms=0u
 `- i2c1 fops=&i2c_fops ctx=&i2c1_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(i2c_children)
-   `- eeprom fops=&eeprom_fops ctx=&eeprom_cfg controller=i2c1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=100u
+   +- eeprom fops=&eeprom_fops ctx=&eeprom_cfg controller=i2c1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=100u
+   `- tmp102 fops=&tmp102_fops ctx=&tmp102_cfg controller=i2c1 lock_timeout_ms=50u
 ```
 
 The output contains only static array fields: `name`, `fops`, `ctx`,

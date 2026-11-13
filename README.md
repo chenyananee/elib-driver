@@ -177,9 +177,61 @@ free(nodes);
 python scripts/dt_check.py src/app_dt.c --root roots
 ```
 
-输出内容只包含设备树静态字段：`name`、`fops`、`ctx`、`controller`、`flags`、
-`lock_timeout_ms`、`child_count`，并用嵌套 `children` 表示树。JSON 是嵌套
-数组，CSV 是同一组字段的行式输出。诊断摘要、错误和警告写到 stderr，因此
+直接打印树状结果：
+
+```text
+roots
++- uart0 fops=&uart_fops ctx=&uart0_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(uart_children)
+|  `- console fops=&console_fops ctx=&console_cfg controller=uart0 lock_timeout_ms=100u
++- spi1 fops=&spi_fops ctx=&spi1_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(spi_children)
+|  +- rhsensor fops=&sensor_fops ctx=&sensor_cfg controller=spi1 lock_timeout_ms=0u
+|  `- flash fops=&flash_fops ctx=&flash_cfg controller=spi1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=50u
+`- i2c1 fops=&i2c_fops ctx=&i2c1_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(i2c_children)
+   +- eeprom fops=&eeprom_fops ctx=&eeprom_cfg controller=i2c1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=100u
+   `- tmp102 fops=&tmp102_fops ctx=&tmp102_cfg controller=i2c1 lock_timeout_ms=50u
+```
+
+JSON 使用嵌套 `children`，节点里只有设备树静态字段。下面是 i2c1 挂载
+`eeprom`、`tmp102` 两个设备的片段：
+
+```json
+[
+  {
+    "name": "i2c1",
+    "fops": "&i2c_fops",
+    "ctx": "&i2c1_cfg",
+    "controller": null,
+    "flags": "0",
+    "lock_timeout_ms": "100u",
+    "child_count": "ELIB_DRV_ARRAY_SIZE(i2c_children)",
+    "children": [
+      {
+        "name": "eeprom",
+        "fops": "&eeprom_fops",
+        "ctx": "&eeprom_cfg",
+        "controller": "i2c1",
+        "flags": "ELIB_DRV_DEV_F_EXCLUSIVE",
+        "lock_timeout_ms": "100u",
+        "child_count": "0",
+        "children": []
+      },
+      {
+        "name": "tmp102",
+        "fops": "&tmp102_fops",
+        "ctx": "&tmp102_cfg",
+        "controller": "i2c1",
+        "flags": "0",
+        "lock_timeout_ms": "50u",
+        "child_count": "0",
+        "children": []
+      }
+    ]
+  }
+]
+```
+
+输出只包含 `name`、`fops`、`ctx`、`controller`、`flags`、`lock_timeout_ms`、
+`child_count` 和嵌套 `children`。诊断摘要、错误和警告写到 stderr，因此
 `> report.json` 得到的文件只有树本身。脚本检查重名、缺失 controller、
 controller 环、children 数组未声明、`child_count` 不一致、深度超限和句柄容量。
 
