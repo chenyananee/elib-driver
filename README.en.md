@@ -46,7 +46,7 @@ Current version: **2.0.0** (`ELIB_DRV_VERSION`).
 - **of-style queries**: `elib_drv_of_find/of_config/of_name/of_controller/
   of_children`.
 - **Offline checker**: `scripts/dt_check.py` expands scattered children arrays
-  into one table and checks duplicates, controllers, depth and handle capacity
+  into a tree and checks duplicates, controllers, depth and handle capacity
   without compiling.
 - **Zero dynamic memory**: the node handle array is static or sized by
   `elib_drv_dt_node_count()` and allocated by the caller.
@@ -188,10 +188,13 @@ directly from C source:
 python scripts/dt_check.py src/app_dt.c --root roots
 ```
 
-It prints a complete node table (name, depth, controller, fops, ctx, flags,
-children, source line) and checks duplicate names, missing controllers,
-controller cycles, undeclared children arrays, `child_count` mismatches, depth
-and handle capacity.
+The output contains only device-tree static fields: `name`, `fops`, `ctx`,
+`controller`, `flags`, `lock_timeout_ms`, `child_count`, with nested
+`children` representing the tree. JSON is a nested array; CSV is the same
+fields in row form. The summary, errors and warnings go to stderr, so
+`> report.json` leaves only the tree in the file. It checks duplicate names,
+missing controllers, controller cycles, undeclared children arrays,
+`child_count` mismatches, depth and handle capacity.
 
 ```bash
 # auto-select root arrays

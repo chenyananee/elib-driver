@@ -161,27 +161,34 @@ const elib_drv_dt_node_t *children =
 ## Offline Check Script
 
 `scripts/dt_check.py` parses `elib_drv_dt_node_t` arrays directly from C source
-without compiling and expands the scattered children arrays into one table:
+without compiling and expands the scattered children arrays into a tree:
 
 ```bash
 python scripts/dt_check.py src/app_dt.c --root roots
 ```
 
-Markdown output:
+Output:
 
 ```text
-| # | depth | name | kind | controller(cfg) | controller(resolved) | fops | ctx | flags | lock_ms | children | source |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | 1 | uart0 | controller | - | - | &uart_fops | &uart0_cfg | - | 100u | uart_children[1] | src/app_dt.c:32 |
-| 1 | 2 | rhsensor | device | uart0 | uart0 | &sensor_fops | &sensor_cfg | - | 0u | - | src/app_dt.c:11 |
+roots
++- uart0 fops=&uart_fops ctx=&uart0_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(uart_children)
+|  `- rhsensor fops=&sensor_fops ctx=&sensor_cfg controller=uart0 lock_timeout_ms=0u
+`- i2c1 fops=&i2c_fops ctx=&i2c1_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(i2c_children)
+   `- eeprom fops=&eeprom_fops ctx=&eeprom_cfg controller=i2c1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=100u
 ```
 
-It also reports:
+The output contains only static array fields: `name`, `fops`, `ctx`,
+`controller`, `flags`, `lock_timeout_ms`, `child_count`, plus nested
+`children`. JSON is a nested array; CSV writes the same fields in row form.
+`Root arrays`, `Node count`, `Max depth`, the suggested handle size, errors and
+warnings go to stderr, so `> report.json` contains only the tree.
 
-- `Root arrays`, `Node count`, `Max depth`;
-- the suggested handle array size: `elib_drv_node_t nodes[N];`;
-- duplicate names, missing/self/cyclic controllers, undeclared children arrays,
-  `child_count` mismatches and depth greater than 8.
+Checks include:
+
+- duplicate names, missing/self/cyclic controllers;
+- undeclared children arrays and `child_count` mismatches;
+- depth greater than 8;
+- node count greater than `--capacity`.
 
 Common options:
 

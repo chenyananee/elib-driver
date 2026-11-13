@@ -36,7 +36,7 @@
   `elib_drv_node_find(elib_drv_node_controller_name(node))` 找到 controller，
   再调同一套 I/O；框架负责 controller 节点锁
 - **of 风格查询**：`elib_drv_of_find/of_config/of_name/of_controller/of_children`
-- **离线检查脚本**：`scripts/dt_check.py` 把零散 children 数组展开成完整表，
+- **离线检查脚本**：`scripts/dt_check.py` 把零散 children 数组展开成树状结构，
   检查重名、controller 引用、深度和句柄容量，无需编译
 - **零动态内存**：节点句柄数组由用户静态提供，或用
   `elib_drv_dt_node_count()` 先统计后自行分配
@@ -177,9 +177,11 @@ free(nodes);
 python scripts/dt_check.py src/app_dt.c --root roots
 ```
 
-输出一张完整节点表（名称、深度、controller、fops、ctx、flags、children、
-source 行号），并检查重名、缺失 controller、controller 环、children 数组
-未声明、`child_count` 不一致、深度超限和句柄容量。
+输出内容只包含设备树静态字段：`name`、`fops`、`ctx`、`controller`、`flags`、
+`lock_timeout_ms`、`child_count`，并用嵌套 `children` 表示树。JSON 是嵌套
+数组，CSV 是同一组字段的行式输出。诊断摘要、错误和警告写到 stderr，因此
+`> report.json` 得到的文件只有树本身。脚本检查重名、缺失 controller、
+controller 环、children 数组未声明、`child_count` 不一致、深度超限和句柄容量。
 
 ```bash
 # 自动选择根数组

@@ -152,27 +152,33 @@ const elib_drv_dt_node_t *children =
 ## 离线检查脚本
 
 `scripts/dt_check.py` 不需要编译，直接解析 C 源里的 `elib_drv_dt_node_t` 数组，
-把零散的 children 数组展开成完整表：
+把零散的 children 数组展开成树状结构：
 
 ```bash
 python scripts/dt_check.py src/app_dt.c --root roots
 ```
 
-输出 Markdown 表：
+输出：
 
 ```text
-| # | depth | name | kind | controller(cfg) | controller(resolved) | fops | ctx | flags | lock_ms | children | source |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | 1 | uart0 | controller | - | - | &uart_fops | &uart0_cfg | - | 100u | uart_children[1] | src/app_dt.c:32 |
-| 1 | 2 | rhsensor | device | uart0 | uart0 | &sensor_fops | &sensor_cfg | - | 0u | - | src/app_dt.c:11 |
+roots
++- uart0 fops=&uart_fops ctx=&uart0_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(uart_children)
+|  `- rhsensor fops=&sensor_fops ctx=&sensor_cfg controller=uart0 lock_timeout_ms=0u
+`- i2c1 fops=&i2c_fops ctx=&i2c1_cfg lock_timeout_ms=100u child_count=ELIB_DRV_ARRAY_SIZE(i2c_children)
+   `- eeprom fops=&eeprom_fops ctx=&eeprom_cfg controller=i2c1 flags=ELIB_DRV_DEV_F_EXCLUSIVE lock_timeout_ms=100u
 ```
 
-它还会输出：
+输出只保留静态数组字段：`name`、`fops`、`ctx`、`controller`、`flags`、
+`lock_timeout_ms`、`child_count`，以及嵌套 `children`。JSON 是嵌套数组，
+CSV 是同一组字段的行式输出。`Root arrays`、`Node count`、`Max depth`、建议
+句柄大小、错误和警告都写到 stderr，所以 `> report.json` 只得到树本身。
 
-- `Root arrays`、`Node count`、`Max depth`；
-- 建议的句柄数组大小：`elib_drv_node_t nodes[N];`；
-- 重复节点名、缺失 controller、controller 自引用/成环、children 数组未声明、
-  `child_count` 与实际数组长度不一致、深度超过 8 等错误。
+检查内容包括：
+
+- 重复节点名、缺失 controller、controller 自引用/成环；
+- children 数组未声明、`child_count` 与实际数组长度不一致；
+- 深度超过 8；
+- 句柄数量超过 `--capacity`。
 
 常用参数：
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dt_check.py - parse C device-tree node arrays into a review table.
+"""dt_check.py - parse C device-tree node arrays into a review tree.
 
 The script understands the array style used by elib-driver:
 
@@ -15,9 +15,11 @@ It also accepts positional initializers (same field order as
 elib_drv_dt_node_t). Point --root at the top-level array(s); without --root it
 auto-selects arrays that are never referenced by another node's .children.
 
-Outputs a Markdown/CSV/JSON table, checks duplicate names, missing controllers,
-controller cycles, child-count mismatches and depth, and prints the suggested
-handle-array size. Standard library only; no compiler needed.
+Outputs a tree-shaped Markdown/JSON view (CSV uses the same fields in row
+form), checks
+duplicate names, missing controllers, controller cycles, child-count mismatches
+and depth, and prints the suggested handle-array size. Standard library only;
+no compiler needed.
 """
 
 from __future__ import annotations
@@ -81,14 +83,18 @@ class NodeInfo:
     ctx: str
     flags: str
     lock: str
-    children: str
     source: str
+    path: str = ""
+    root_array: str = ""
+    raw_fields: dict[str, str] = field(default_factory=dict)
+    child_nodes: list["NodeInfo"] = field(default_factory=list)
 
 
 @dataclass
 class TreeReport:
     roots: list[str]
     nodes: list[NodeInfo] = field(default_factory=list)
+    root_nodes: list[NodeInfo] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -474,7 +480,14 @@ def build_report(
     active_arrays: set[str] = set()
     order = 0
 
-    def walk(array_name: str, parent: str, depth: int) -> None:
+    def walk(
+        array_name: str,
+        parent: str,
+        depth: int,
+        parent_info: NodeInfo | None,
+        parent_path: str,
+        root_array: str,
+    ) -> None:
         nonlocal order
         if array_name in active_arrays:
             report.errors.append(f"children cycle through array '{array_name}'")
@@ -517,10 +530,6 @@ def build_report(
             else:
                 kind = "node"
 
-            children_text = "-"
-            if child_ref is not None:
-                children_text = f"{child_ref}[{count}]"
-
             info = NodeInfo(
                 order=order,
                 depth=depth,
@@ -533,11 +542,17 @@ def build_report(
                 ctx=strip_cast(raw.fields.get("ctx", "")) or "-",
                 flags=parseFlags(raw.fields.get("flags", "")),
                 lock=raw.fields.get("lock_timeout_ms", "").strip() or "0",
-                children=children_text,
                 source=f"{raw.source}:{raw.line}",
+                path=f"{parent_path}/{name}" if parent_path else name,
+                root_array=root_array,
+                raw_fields=dict(raw.fields),
             )
             order += 1
             report.nodes.append(info)
+            if parent_info is None:
+                report.root_nodes.append(info)
+            else:
+                parent_info.child_nodes.append(info)
             by_name.setdefault(name, info)
 
             if child_ref is not None:
@@ -547,7 +562,7 @@ def build_report(
                         f"'{child_ref}' is not declared"
                     )
                 elif count > 0:
-                    walk(child_ref, name, depth + 1)
+                    walk(child_ref, name, depth + 1, info, info.path, root_array)
 
         active_arrays.remove(array_name)
 
@@ -555,7 +570,7 @@ def build_report(
         if root not in arrays:
             report.errors.append(f"root array '{root}' is not declared")
             continue
-        walk(root, "", 1)
+        walk(root, "", 1, None, root, root)
 
     if not report.nodes and not report.errors:
         report.errors.append("no nodes reachable from the selected roots")
@@ -598,93 +613,108 @@ def build_report(
     return report
 
 
-def node_rows(report: TreeReport) -> list[list[str]]:
+def raw_field(node: NodeInfo, name: str) -> str | None:
+    value = node.raw_fields.get(name, "").strip()
+    if value == "" or value == "NULL":
+        return None
+    return strip_cast(value)
+
+
+def csv_rows(report: TreeReport) -> list[list[str]]:
     rows = []
     for n in report.nodes:
+        ctrl = controller_value(n.raw_fields)
         rows.append([
-            str(n.order),
-            str(n.depth),
             n.name,
-            n.kind,
-            n.controller_cfg,
-            n.controller_resolved,
-            n.fops,
-            n.ctx,
-            n.flags,
-            n.lock,
-            n.children,
-            n.source,
+            raw_field(n, "fops") or "",
+            raw_field(n, "ctx") or "",
+            ctrl or "",
+            raw_field(n, "flags") or "0",
+            raw_field(n, "lock_timeout_ms") or "0",
+            raw_field(n, "child_count") or "0",
         ])
     return rows
 
 
-def print_markdown(report: TreeReport, capacity: int | None) -> None:
-    headers = [
-        "#", "depth", "name", "kind", "controller(cfg)",
-        "controller(resolved)", "fops", "ctx", "flags", "lock_ms",
-        "children", "source",
-    ]
-    print("| " + " | ".join(headers) + " |")
-    print("|" + "|".join("---" for _ in headers) + "|")
-    for row in node_rows(report):
-        print("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |")
-    print()
-    print(f"Root arrays: {', '.join(report.roots)}")
-    print(f"Node count: {report.node_count}")
-    print(f"Max depth: {report.max_depth} (limit {MAX_DEPTH})")
-    print(f"Suggested handle array: elib_drv_node_t nodes[{report.node_count}];")
+def render_tree_node(
+    node: NodeInfo, prefix: str, last: bool, lines: list[str]
+) -> None:
+    connector = "`- " if last else "+- "
+    parts = [node.name]
+    fields = (
+        ("fops", raw_field(node, "fops")),
+        ("ctx", raw_field(node, "ctx")),
+        ("controller", controller_value(node.raw_fields)),
+        ("flags", raw_field(node, "flags")),
+        ("lock_timeout_ms", raw_field(node, "lock_timeout_ms")),
+        ("child_count", raw_field(node, "child_count")),
+    )
+    for key, value in fields:
+        if value is not None:
+            parts.append(f"{key}={value}")
+    lines.append(prefix + connector + " ".join(parts))
+    child_prefix = prefix + ("   " if last else "|  ")
+    for i, child in enumerate(node.child_nodes):
+        render_tree_node(child, child_prefix, i == len(node.child_nodes) - 1,
+                         lines)
+
+
+def print_tree(report: TreeReport) -> None:
+    lines: list[str] = []
+    for root in report.roots:
+        roots_here = [n for n in report.root_nodes if n.root_array == root]
+        if not roots_here:
+            continue
+        lines.append(root)
+        for i, node in enumerate(roots_here):
+            render_tree_node(node, "", i == len(roots_here) - 1, lines)
+    print("\n".join(lines))
+
+
+def print_diagnostics(report: TreeReport, capacity: int | None) -> None:
+    print(f"Root arrays: {', '.join(report.roots)}", file=sys.stderr)
+    print(f"Node count: {report.node_count}", file=sys.stderr)
+    print(f"Max depth: {report.max_depth} (limit {MAX_DEPTH})", file=sys.stderr)
+    print(f"Suggested handle array: elib_drv_node_t nodes[{report.node_count}];",
+          file=sys.stderr)
     if capacity is not None:
-        print(f"Capacity check: {report.node_count} <= {capacity}")
+        print(f"Capacity check: {report.node_count} <= {capacity}",
+              file=sys.stderr)
     if report.errors:
-        print(f"Errors: {len(report.errors)}")
+        print(f"Errors: {len(report.errors)}", file=sys.stderr)
         for err in report.errors:
-            print(f"  - {err}")
+            print(f"  - {err}", file=sys.stderr)
     if report.warnings:
-        print(f"Warnings: {len(report.warnings)}")
+        print(f"Warnings: {len(report.warnings)}", file=sys.stderr)
         for warn in report.warnings:
-            print(f"  - {warn}")
+            print(f"  - {warn}", file=sys.stderr)
 
 
 def print_csv(report: TreeReport) -> None:
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow([
-        "#", "depth", "name", "kind", "controller_cfg",
-        "controller_resolved", "fops", "ctx", "flags", "lock_ms",
-        "children", "source",
+        "name", "fops", "ctx", "controller", "flags",
+        "lock_timeout_ms", "child_count",
     ])
-    writer.writerows(node_rows(report))
+    writer.writerows(csv_rows(report))
 
 
-def print_json(report: TreeReport, capacity: int | None) -> None:
-    payload = {
-        "root_arrays": report.roots,
-        "node_count": report.node_count,
-        "max_depth": report.max_depth,
-        "max_depth_limit": MAX_DEPTH,
-        "suggested_capacity": report.node_count,
-        "capacity": capacity,
-        "nodes": [
-            {
-                "order": n.order,
-                "depth": n.depth,
-                "name": n.name,
-                "kind": n.kind,
-                "controller_cfg": n.controller_cfg,
-                "controller_resolved": n.controller_resolved,
-                "parent": n.parent,
-                "fops": n.fops,
-                "ctx": n.ctx,
-                "flags": n.flags,
-                "lock_ms": n.lock,
-                "children": n.children,
-                "source": n.source,
-            }
-            for n in report.nodes
-        ],
-        "errors": report.errors,
-        "warnings": report.warnings,
+def node_json(node: NodeInfo) -> dict[str, Any]:
+    return {
+        "name": node.name,
+        "fops": raw_field(node, "fops"),
+        "ctx": raw_field(node, "ctx"),
+        "controller": controller_value(node.raw_fields),
+        "flags": raw_field(node, "flags") or "0",
+        "lock_timeout_ms": raw_field(node, "lock_timeout_ms") or "0",
+        "child_count": raw_field(node, "child_count") or "0",
+        "children": [node_json(child) for child in node.child_nodes],
     }
-    json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
+
+
+def print_json(report: TreeReport) -> None:
+    json.dump([node_json(n) for n in report.root_nodes], sys.stdout,
+              indent=2, ensure_ascii=False)
     print()
 
 
@@ -706,7 +736,7 @@ def collect_files(paths: list[str]) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Parse C elib_drv_dt_node_t arrays into a review table."
+        description="Parse C elib_drv_dt_node_t arrays into a review tree."
     )
     parser.add_argument("files", nargs="+", help="C source/header files or directories")
     parser.add_argument(
@@ -755,13 +785,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "markdown":
         args.format = "md"
     if args.format == "md":
-        print_markdown(report, args.capacity)
+        print_tree(report)
     elif args.format == "csv":
         print_csv(report)
-        if report.errors:
-            print(f"dt_check: {len(report.errors)} error(s)", file=sys.stderr)
     else:
-        print_json(report, args.capacity)
+        print_json(report)
+
+    print_diagnostics(report, args.capacity)
 
     if report.errors:
         return 1
