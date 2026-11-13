@@ -2,117 +2,99 @@
 
 # Building and Testing
 
-The library has no build system: add `include/` to the include path and `src/*.c` to the project. This page gives the zero-warning build matrix for the target toolchain plus the functional, concurrency and stripped-log test runs.
+[Back to README](../README.en.md)
 
-## Source list
+The library has no build system: add `include/` to the include path and
+`src/*.c` to the project.
+
+## Sources
 
 ```text
-include/elib_drv.h       the only public header
-src/elib_drv_internal.h  private singleton, lock helpers, log macro
-src/elib_drv_manager.c   init/deinit/validation/tables/registration/lookup
-src/elib_drv_device.c    open/close/read/write/ioctl/accessors/controller lock
+src/elib_drv_manager.c
+src/elib_drv_tree.c
+src/elib_drv_node.c
 ```
 
-## ARM toolchain build (hard requirement)
-
-Verified toolchain: `C:\SF\arm-gnu-toolchain-15.2.rel1-mingw-w64-x86_64-arm-none-eabi` (Arm GNU Toolchain 15.2.Rel1, `arm-none-eabi-gcc` 15.2.1).
-
-Requirement: zero warnings and zero errors under `-std=c99 -Wall -Wextra -Werror -pedantic`; `-O0` / `-O2` / `-Os` with the log both on and off must pass.
+## ARM Target Build
 
 ```bash
 arm-none-eabi-gcc -std=c99 -Wall -Wextra -Werror -pedantic \
     -mcpu=cortex-m4 -mthumb -O2 -Iinclude \
-    -c src/elib_drv_manager.c -o elib_drv_manager.o
-arm-none-eabi-gcc -std=c99 -Wall -Wextra -Werror -pedantic \
-    -mcpu=cortex-m4 -mthumb -O2 -Iinclude \
-    -c src/elib_drv_device.c -o elib_drv_device.o
+    -c src/elib_drv_manager.c src/elib_drv_tree.c src/elib_drv_node.c
 ```
 
-Run the stripped-log variant and every optimization level:
+Zero-warning matrix:
 
-```bash
-for opt in -O0 -O2 -Os; do
-    arm-none-eabi-gcc -std=c99 -Wall -Wextra -Werror -pedantic \
-        -mcpu=cortex-m4 -mthumb "$opt" -Iinclude \
-        -c src/elib_drv_manager.c src/elib_drv_device.c
-    arm-none-eabi-gcc -std=c99 -Wall -Wextra -Werror -pedantic \
-        -mcpu=cortex-m4 -mthumb "$opt" -DELIB_DRV_LOG_ENABLE=0 -Iinclude \
-        -c src/elib_drv_manager.c src/elib_drv_device.c
-done
-```
+- `src/*.c` × `-O0/-O2/-Os` × `ELIB_DRV_LOG_ENABLE=1/0` = 18 objects
+- `test/test_elib_drv.c` × log on/off = 2 objects
+- 20 objects total, all zero-warning with
+  `-Wall -Wextra -Werror -pedantic`
 
-> The functional test source may also be compiled to an object file for syntax/warning checks; it depends on `stdio.h` and is not linked into the target image.
-
-## Functional tests
+## Host Functional Tests
 
 ```bash
 gcc -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude \
-    test/test_elib_drv.c src/elib_drv_manager.c src/elib_drv_device.c \
-    -o t_drv && ./t_drv
+    test/test_elib_drv.c src/*.c -o t_drv
+./t_drv
 ```
 
-- Includes only the public `elib_drv.h`, never a private header;
-- Ships its own `main()`; a failing case prints `FAIL file:line`, and the exit code is 0 when everything passes.
-
-## Concurrency test
+Log-stripped build:
 
 ```bash
-gcc -std=c99 -pthread -Iinclude test/test_elib_drv_mt.c \
-    src/elib_drv_manager.c src/elib_drv_device.c -o t_mt && ./t_mt
+gcc -std=c99 -Wall -Wextra -Werror -pedantic -DELIB_DRV_LOG_ENABLE=0 \
+    -Iinclude test/test_elib_drv.c src/*.c -o t_drv_nolog
+./t_drv_nolog
 ```
 
-- A pthread port verifies that device I/O and a direct write sharing the controller lock never interleave;
-- It also verifies that `ELIB_DRV_DEV_F_EXCLUSIVE` admits exactly one concurrent opener;
-- This is a POSIX host test, not part of the target firmware build.
+Expected output: `ALL PASSED (n checks)`.
 
-## Stripped log
+MSVC example:
+
+```bat
+cl /nologo /W4 /std:c11 /Iinclude test\test_elib_drv.c ^
+   src\elib_drv_manager.c src\elib_drv_tree.c src\elib_drv_node.c ^
+   /Fe:t_drv.exe
+t_drv.exe
+```
+
+## Concurrency Test
+
+POSIX pthread environment:
 
 ```bash
-gcc -std=c99 -Wall -Wextra -Werror -DELIB_DRV_LOG_ENABLE=0 \
-    -Iinclude -c src/elib_drv_manager.c src/elib_drv_device.c
+gcc -std=c99 -pthread -Iinclude test/test_elib_drv_mt.c src/*.c \
+    -o t_mt
+./t_mt
 ```
 
-- Every log call and format string is stripped; `elib_drv_set_log` remains callable;
-- The log assertions in the test suite switch off with `ELIB_DRV_LOG_ENABLE`, and the functional suite must still pass.
+Coverage:
 
-## Expected output
+- Device fops forwarding `elib_drv_write(controller)` and direct controller
+  writes share the controller node lock, so hardware access never interleaves.
+- Eight concurrent opens of an EXCLUSIVE node: exactly one succeeds.
 
-Functional tests:
+The file depends on `<pthread.h>` and is not part of the ARM default build. On a
+Windows MSVC host without pthread it is reviewed but not part of the default
+verification.
 
-```text
-=== elib-driver tests ===
-Test: test_init_wires_static... done
-...
-ALL PASSED (0 failures)
-```
+## Test Coverage
 
-Concurrency test:
+`test/test_elib_drv.c` covers:
 
-```text
-MT ALL PASSED (300000 hardware ops, 1 exclusive winner)
-```
+- `dt_node_count`: empty tree, nested count, NULL children, depth overflow, NULL
+  arguments
+- init: automatic controller-first, shared controller, nodes without init,
+  failure rollback, idempotent re-init
+- tree validation: duplicate/empty names, missing/empty/self controller,
+  insufficient capacity, bad port
+- I/O: read/write without open, open/close refcount, exclusive, missing fops,
+  argument validation, result greater than len
+- controller forwarding: a device looks up its controller by name and calls the
+  same unified I/O
+- logging: LF/CRLF/NONE, persistence across init/deinit, invalid line ending
+- port: lock create/lock/unlock counts, create failure, lock failure
 
-## Test coverage
+## Artifacts
 
-| Area | Covered |
-|---|---|
-| init / deinit | static wiring, NULL port, invalid config, duplicates, null ctx, unknown controller, double init, deinit rejected during init, reverse teardown, failing controller direct-close, deinit BUSY, rollback, deinit error propagation |
-| lookup / iteration | `find`, `foreach` order and early stop |
-| device I/O | reference counting, EXCLUSIVE, open failure, not open, argument/result checks, NOT_SUPPORTED, I/O not logged, lock timeout |
-| direct controller | reference counting, I/O, not open, no fops, argument/result checks, lock held, BUSY, rollback, accessors |
-| runtime table | no slot, register/unregister, double unregister rejected, self-unregister during init rejected, duplicates, unknown controller, slot reuse, unaligned/tiny cache, init child and unbound-device cleanup, slot exhaustion |
-| logging | flow lines, disable, LF/none/CRLF line endings, retention across init, invalid line-ending value, registration failure logs, direct logs |
-| bounds | context size upper bounds, NULL-safe accessors |
-
-## Known limitations
-
-- `test/test_elib_drv_mt.c` depends on `pthread.h`, which the `arm-none-eabi` toolchain does not provide, so it cannot be compiled for the target;
-- The functional/concurrency commands above need a host gcc (MinGW, Linux or WSL);
-- The library only uses `memset`/`strcmp` from `<string.h>`, provided by the compiler's C runtime or the project; a target project only needs `src/*.c` and `include/`.
-
-## See also
-
-- [Lifecycle and initialization](usage_lifecycle.en.md)
-- [Flow logging](usage_logging.en.md)
-- [RTOS porting](usage_porting.en.md)
-- [Back to README](../README.en.md)
+Keep `t_drv`, `t_drv_nolog`, `t_mt`, `*.o`, `*.obj` and `*.exe` under `build/`
+or ignore them; do not commit build artifacts.

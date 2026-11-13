@@ -2,9 +2,10 @@
 
 # RTOS 移植
 
-框架与 RTOS 解耦，唯一需要移植的是 `elib_drv_port_t` 的四个互斥量回调；`port == NULL` 即单线程裸机。
+[返回 README](../README.md)
 
-## 需要实现的接口
+框架与 RTOS 解耦，唯一需要移植的是 `elib_drv_port_t` 四个互斥量回调。
+`port == NULL` 即单线程裸机，不创建锁。
 
 ```c
 typedef struct {
@@ -15,32 +16,16 @@ typedef struct {
 } elib_drv_port_t;
 ```
 
-| 回调 | 约定 |
-|---|---|
-| `mutex_create` | 返回互斥量句柄；失败返回 `NULL`（框架映射为 `-ELIB_DRV_ERR_LOCK`） |
-| `mutex_destroy` | 释放句柄；只在框架不再使用它之后调用 |
-| `mutex_lock` | 成功返回 0；超时/失败返回负值（框架映射为 `-ELIB_DRV_ERR_LOCK`） |
-| `mutex_unlock` | 成功返回 0；失败返回负值（框架忽略返回值） |
-
-## 超时与返回值
-
-- `timeout_ms` 可能是 `ELIB_DRV_WAIT_FOREVER`（`UINT32_MAX`），port 应把它当“永久等待”处理。
-- 设备锁与直连 controller 锁的超时分别来自 `device_desc.lock_timeout_ms` 与 `controller_desc.lock_timeout_ms`，`0` 在框架内已映射为 `ELIB_DRV_WAIT_FOREVER`。
-- `mutex_lock` 的负返回值统一映射为 `-ELIB_DRV_ERR_LOCK`；不要在 port 里返回框架错误码。
-- `mutex_unlock` 的返回值被忽略，但实现仍应正确返回 0/负值。
-
-## 存储与零堆
-
-- 框架自身不做任何分配；互斥量的存储由 port 负责，堆或静态池都可以。
-- 零堆工程用 RTOS 的静态创建接口（如 FreeRTOS 的 `xSemaphoreCreateMutexStatic` + `StaticSemaphore_t` 数组），把句柄交给框架。
-- `name` 只用于调试/日志，可以为 `NULL` 或忽略。
+- 四个回调必须同时提供；缺一个 init 返回 `-INVALID_PARAM`。
+- `mutex_lock` 成功返回 0，超时/失败返回负数；框架映射为
+  `-ELIB_DRV_ERR_LOCK`。
+- 框架不分配锁对象；`mutex_create` 返回的指针由框架保存，deinit 时调用
+  `mutex_destroy`。
+- 每个树节点创建一把锁，锁数量 = 节点数。
 
 ## FreeRTOS
 
 ```c
-#include "FreeRTOS.h"
-#include "semphr.h"
-
 static void *port_create(const char *name)
 {
     (void)name;
@@ -69,7 +54,7 @@ static const elib_drv_port_t port = {
 };
 ```
 
-零堆版本：把 `xSemaphoreCreateMutex` 换成 `xSemaphoreCreateMutexStatic`（配 `StaticSemaphore_t` 数组）。
+零堆版本用 `xSemaphoreCreateMutexStatic` 配 `StaticSemaphore_t` 数组。
 
 ## CMSIS-RTOS2
 
@@ -98,23 +83,26 @@ static int port_unlock(void *m)
 }
 ```
 
-## 裸机
+## 裸机/单线程
 
-`elib_drv_init(NULL, &cfg)`：不建锁、不加锁、零额外 RAM；日志仍可独立使用。此时所有 API 都是同步调用，不需要考虑并发。
+```c
+elib_drv_init_tree(NULL, &tree, nodes, node_capacity);
+```
 
-## 检查清单
+`NULL` port 不创建锁、锁助手直接返回成功；节点锁超时字段被忽略。日志仍可
+独立使用。
 
-- 四个回调齐全且都不返回未定义值；
-- `mutex_lock` 把 `ELIB_DRV_WAIT_FOREVER` 映射为 RTOS 的永久等待；
-- 毫秒到 tick 的换算使用 RTOS 自己的宏（`pdMS_TO_TICKS` 等）；
-- `mutex_create` 失败返回 `NULL`，并且不会泄漏已经创建的资源；
-- `mutex_destroy` 在框架 `deinit`/注销后不会再被回调使用；
-- 互斥量可由 port 静态分配，满足零堆要求；
-- 不要在 port 回调里调用 `elib_drv_*`。
+## 锁规则
 
-## 相关
+- 每个节点一把锁；`read/write/ioctl/open/close` 在节点锁内调用 fops。
+- device 转发 controller 时顺序为 `device 锁 → controller 锁`，禁止反向。
+- 同一节点 fops 内不得再调该节点的 `elib_drv_*` I/O（非递归锁会自锁）。
+- `elib_drv_node_lock()` 只用于驱动内部显式组合多次底层操作；持有后不要再
+  调会锁同一节点的框架 I/O。
+- 全部 API 只允许任务上下文；ISR 不调用。
 
-- [锁、并发与超时](usage_locking.md)
-- [生命周期与初始化](usage_lifecycle.md)
-- [流程日志](usage_logging.md)
-- [返回 README](../README.md)
+## 初始化顺序建议
+
+1. 在调度器启动前或安全启动任务中调用 `elib_drv_init_tree()`。
+2. 初始化完成后，各任务再用 `elib_drv_node_find()` 取句柄并做 I/O。
+3. 关闭业务后再 `elib_drv_deinit()`；确保所有节点 `open_count == 0`。

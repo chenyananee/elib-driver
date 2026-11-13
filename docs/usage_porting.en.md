@@ -2,9 +2,11 @@
 
 # RTOS Porting
 
-The framework is RTOS agnostic; the only thing to port is the four mutex callbacks of `elib_drv_port_t`. With `port == NULL` it is single-threaded bare metal.
+[Back to README](../README.en.md)
 
-## The interface to implement
+The framework is RTOS agnostic; the only thing to port is the four mutex
+callbacks of `elib_drv_port_t`. `port == NULL` means single-threaded bare metal
+and no locks are created.
 
 ```c
 typedef struct {
@@ -15,32 +17,17 @@ typedef struct {
 } elib_drv_port_t;
 ```
 
-| Callback | Contract |
-|---|---|
-| `mutex_create` | return the mutex handle; `NULL` on failure (the framework maps it to `-ELIB_DRV_ERR_LOCK`) |
-| `mutex_destroy` | release the handle; called only when the framework no longer needs it |
-| `mutex_lock` | 0 on success; negative on timeout/failure (mapped to `-ELIB_DRV_ERR_LOCK`) |
-| `mutex_unlock` | 0 on success; negative on failure (the return value is ignored) |
-
-## Timeouts and return values
-
-- `timeout_ms` may be `ELIB_DRV_WAIT_FOREVER` (`UINT32_MAX`); the port should treat it as "wait forever".
-- Device and direct controller lock timeouts come from `device_desc.lock_timeout_ms` and `controller_desc.lock_timeout_ms`; the framework has already mapped `0` to `ELIB_DRV_WAIT_FOREVER`.
-- A negative `mutex_lock` return is always mapped to `-ELIB_DRV_ERR_LOCK`; do not return framework error codes from the port.
-- The `mutex_unlock` return value is ignored, but the implementation should still return 0/negative correctly.
-
-## Storage and zero heap
-
-- The framework never allocates; the port owns the mutex storage, which may be heap or a static pool.
-- A zero-heap project uses the RTOS static creation API (for example FreeRTOS `xSemaphoreCreateMutexStatic` with a `StaticSemaphore_t` array) and hands the handle to the framework.
-- `name` is for debugging/logging only and may be `NULL` or ignored.
+- All four callbacks are required; a missing one makes init return
+  `-INVALID_PARAM`.
+- `mutex_lock` returns 0 on success and a negative value on timeout/failure;
+  the framework maps it to `-ELIB_DRV_ERR_LOCK`.
+- The framework does not allocate lock objects; the pointer returned by
+  `mutex_create` is stored and passed to `mutex_destroy` during deinit.
+- One lock is created per tree node; lock count equals node count.
 
 ## FreeRTOS
 
 ```c
-#include "FreeRTOS.h"
-#include "semphr.h"
-
 static void *port_create(const char *name)
 {
     (void)name;
@@ -69,7 +56,8 @@ static const elib_drv_port_t port = {
 };
 ```
 
-Zero-heap variant: replace `xSemaphoreCreateMutex` with `xSemaphoreCreateMutexStatic` (plus a `StaticSemaphore_t` array).
+A zero-heap version uses `xSemaphoreCreateMutexStatic` with
+`StaticSemaphore_t` arrays.
 
 ## CMSIS-RTOS2
 
@@ -98,23 +86,31 @@ static int port_unlock(void *m)
 }
 ```
 
-## Bare metal
+## Bare Metal / Single Thread
 
-`elib_drv_init(NULL, &cfg)`: no locks created or taken and no extra RAM, while the log still works. Every API is then a synchronous call and concurrency does not apply.
+```c
+elib_drv_init_tree(NULL, &tree, nodes, node_capacity);
+```
 
-## Checklist
+A NULL port creates no locks, the lock helper always succeeds, and node lock
+timeouts are ignored. Logging remains usable.
 
-- All four callbacks are present and never return undefined values;
-- `mutex_lock` maps `ELIB_DRV_WAIT_FOREVER` to the RTOS infinite wait;
-- millisecond-to-tick conversion uses the RTOS macro (`pdMS_TO_TICKS`, ...);
-- `mutex_create` returns `NULL` on failure without leaking already created resources;
-- no `mutex_destroy` callback is used after framework deinit/unregistration;
-- mutexes may be statically allocated by the port to satisfy zero-heap;
-- port callbacks must not call `elib_drv_*`.
+## Lock Rules
 
-## See also
+- One lock per node; `read/write/ioctl/open/close` call fops under the node lock.
+- Device-to-controller forwarding uses `device lock -> controller lock`; the
+  reverse order is forbidden.
+- A node's fops must not call `elib_drv_*` I/O on the same node; the lock is not
+  recursive.
+- `elib_drv_node_lock()` is for grouping several low-level controller operations
+  inside a driver; do not call framework I/O that locks the same node while
+  holding it.
+- All APIs are task-context only; do not call them from an ISR.
 
-- [Locking and concurrency](usage_locking.en.md)
-- [Lifecycle and initialization](usage_lifecycle.en.md)
-- [Flow logging](usage_logging.en.md)
-- [Back to README](../README.en.md)
+## Suggested Init Order
+
+1. Call `elib_drv_init_tree()` before the scheduler starts or from a safe boot
+   task.
+2. After init, tasks obtain handles with `elib_drv_node_find()` and perform I/O.
+3. Stop application work, then call `elib_drv_deinit()` after all node
+   `open_count` values reach zero.

@@ -2,584 +2,288 @@
 
 # elib-driver
 
-面向 MCU 的轻量驱动框架：**manager / controller / device** 三层，设备操作是
-Linux `file_operations` 风格（open / close / read / write / ioctl），静态表
-放 flash、运行时上下文只占十几字节，RTOS 互斥通过 port 外置，可选注册一个
-printf 风格的流程日志。
+面向 MCU 的设备树驱动框架：一棵静态设备树描述全部 controller/device 节点，
+节点名唯一，每个节点一份统一 `fops`、一个 `void *ctx`。`elib_drv_init_tree()`
+自动按 controller 先于依赖节点的顺序初始化全部节点；设备 I/O 和 controller
+直连共用同一套 `open/close/read/write/ioctl`。
 
-- C99，零动态内存；除 manager 单例外没有其它隐藏的全局状态
-- 单公共头 `include/elib_drv.h`，库外可完整使用：不改库、不引内部头、无容量宏
-- 静态 `const` 描述符表 + 可选运行时槽位表（用户给缓存，容量自动推导）
-- 互斥锁与日志都通过接口外置，裸机传 `NULL` 即完全不锁、不打日志
+- C99，零动态内存；库本身不 `malloc/free`，树、句柄数组、ctx、锁都由用户提供
+- 单公共头 `include/elib_drv.h`，无内部头依赖，无容量宏
+- 统一节点：不再区分 controller/device 类型；有 children 的节点可作 controller，
+  有 controller/父关系的节点是 device
+- 统一 fops：`init/deinit/open/close/read/write/ioctl` 一套表
+- 统一 I/O：`elib_drv_read/write/ioctl(node, ...)` 可作用于任意节点；
+  device 驱动按 controller 名找到 controller 后直接调用同一套 API
+- RTOS 无关：`elib_drv_port_t` 提供互斥量创建/销毁/加锁/解锁；`NULL` port 即裸机
+- 可选 printf 风格流程日志，锁外打印，支持整段裁剪和行尾配置
 
-当前版本：**0.3.0**（`ELIB_DRV_VERSION`），单头 `include/elib_drv.h`。
+当前版本：**2.0.0**（`ELIB_DRV_VERSION`）。
 
 ## 特性
 
-- **三层职责明确**：manager 负责校验/建锁/查找/调度；controller 是硬件控制器
-  或一类设备的驱动（共享资源 + 总线锁）；device 是挂在 controller 上的实例
-  （`file_operations` 实现）
-- **两种注册方式**：编译期 `const` 表（描述符在 flash）与运行期槽位表
-  （用户缓存，`elib_drv_register_*`），查询与遍历统一
-- **controller 可直连**：UART、裸 ADC、GPIO 这类场景可以绕过 device，直接
-  `elib_drv_controller_open/read/write/ioctl`；直连与 device 共享同一把
-  controller 锁，逐次调用不会交错
-- **容量自动推导**：运行时表容量 = 缓存字节数 ÷ 槽位大小，向下取整；静态表容量
-  就是表项数，用 `ELIB_DRV_ARRAY_SIZE()` 得到，不存在 `MAX_*` 配置宏
-- **打开语义**：引用计数 + 可选独占（`ELIB_DRV_DEV_F_EXCLUSIVE`），句柄就是
-  `elib_drv_device_t *`，无文件描述符对象
-- **RTOS 无关**：`elib_drv_port_t` 提供互斥量创建/销毁/加锁/解锁，框架自身
-  不分配；`port == NULL` 即单线程裸机
-- **可选流程日志**：注册 `printf` 或任意 `int (*)(const char *, ...)`，框架在
-  **锁外**打印 init / 注册 / 注销 / open / close / 失败等流程；read/write/ioctl
-  不打印，支持 `-DELIB_DRV_LOG_ENABLE=0` 整段裁掉；每条记录可配置追加
-  `\n`（默认）、`\r\n` 或什么都不加
-
-## 用法文档
-
-| 流程 | 文档 |
-|------|------|
-| 生命周期与初始化 | [docs/usage_lifecycle.md](docs/usage_lifecycle.md) |
-| 静态描述符表 | [docs/usage_static_tables.md](docs/usage_static_tables.md) |
-| 运行时注册表 | [docs/usage_runtime_tables.md](docs/usage_runtime_tables.md) |
-| 设备打开与 I/O | [docs/usage_device_io.md](docs/usage_device_io.md) |
-| 控制器直连 | [docs/usage_controller_direct.md](docs/usage_controller_direct.md) |
-| 锁、并发与超时 | [docs/usage_locking.md](docs/usage_locking.md) |
-| 流程日志 | [docs/usage_logging.md](docs/usage_logging.md) |
-| RTOS 移植 | [docs/usage_porting.md](docs/usage_porting.md) |
-| 构建与测试 | [docs/usage_build_test.md](docs/usage_build_test.md) |
-
-## 分层与调用路径
-
-```
-用户（device 路径）: elib_drv_open/close/read/write/ioctl(dev)
-        │
-        ▼
-manager 门面: 参数/状态校验 → 取设备锁 → 调 ops → 放锁 → (可选)流程日志
-        │
-        ▼
-device ops (file_operations): open/close/read/write/ioctl(dev, ...)
-        │            │
-        │            └─ 需要共享总线时: elib_drv_controller_lock(ctrl, timeout)
-        ▼
-controller priv (寄存器/总线/外设) → 硬件
-
-用户（直连路径）: elib_drv_controller_open/close/read/write/ioctl(ctrl)
-        │
-        ▼
-manager 门面: 取 controller 锁 → 调 controller fops → 放锁 → 日志
-        │
-        ▼
-controller priv → 硬件（与 device 路径共用同一把 controller 锁）
-```
-
-| 层 | 是什么 | 常量（flash） | 可变（RAM，用户提供） |
-|---|---|---|---|
-| manager | 注册表 + 调度 + 日志分发 | — | 单例（`initialized`/`port`/表指针/`log`） |
-| controller | 硬件控制器/一类设备的驱动与共享资源 | `controller_desc`（name/ops/fops/priv） | 静态：`elib_drv_controller_t`（设备数 + 直连打开数）；运行时：槽位内联 |
-| device | 挂在 controller 上的设备实例 | `device_desc`（name/ops/priv/绑定/flags/超时） | 静态：`elib_drv_device_t`；运行时：槽位内联 |
-
-## 内存模型
-
-### 静态表：描述符在 flash，上下文在 RAM
-
-```c
-static elib_drv_controller_t i2c1_ctx;
-static elib_drv_device_t     eeprom_ctx;
-
-static const elib_drv_controller_desc_t ctrls[] = {
-    { .name = "i2c1", .ops = NULL, .priv = &i2c1_hw, .ctx = &i2c1_ctx },
-};
-static const elib_drv_device_desc_t devs[] = {
-    { .name = "eeprom", .ops = &eeprom_ops, .priv = &eeprom_info,
-      .ctx = &eeprom_ctx, .controller = "i2c1" },
-};
-
-static const elib_drv_config_t cfg = {
-    .controllers = ctrls, .controller_count = ELIB_DRV_ARRAY_SIZE(ctrls),
-    .devices     = devs,  .device_count     = ELIB_DRV_ARRAY_SIZE(devs),
-    .runtime     = NULL,                     /* 只用静态表 */
-};
-
-elib_drv_init(&port, &cfg);                  /* port = NULL 即裸机 */
-```
-
-- 描述符只读：库内所有描述符参数都是 `const *`，写描述符的代码直接编译失败。
-- 每个表项必须自带 `ctx`；`ctx` 的字段由框架维护，调用方不得写入。
-- RAM 成本：32 位下 device 上下文 20 B、controller 16 B（64 位为 32/24 B）。
-- `port`、描述符表与运行时缓存必须比 manager 长寿（通常用静态存储）；`config` 结构本身可以放在栈上。
-
-### 运行时表：用户给缓存，容量自动算
-
-```c
-static elib_drv_controller_slot_t rt_ctrls[2];
-static elib_drv_device_slot_t     rt_devs[8];
-
-static const elib_drv_runtime_t runtime = {
-    .controllers = { rt_ctrls, sizeof rt_ctrls },
-    .devices     = { rt_devs,  sizeof rt_devs  },
-};
-
-/* cfg.runtime = &runtime; 然后 init ... */
-
-elib_drv_device_desc_t d = {
-    .name = "sensor3", .ops = &sensor_ops, .controller = "i2c1",
-};
-elib_drv_device_t *dev = NULL;
-elib_drv_register_device(&d, &dev);      /* 运行期追加 */
-/* ... */
-elib_drv_unregister_device(dev);         /* 运行期移除，槽位可复用 */
-```
-
-- 每个槽位 = 同款描述符 + 它的上下文；容量 = 对齐后字节数 ÷ `sizeof(槽位)`，
-  向下取整，零头丢弃。
-- 缓存起始地址由框架对齐，用户不需要关心对齐。
-- 没给缓存（`runtime == NULL` 或容量为 0）时 `elib_drv_register_*` 返回
-  `-ELIB_DRV_ERR_NO_SLOT`。
-- 运行时注册会拷贝调用方的描述符；`desc.name` 必须活到注销（用于查找），
-  `desc.controller` 只在注册调用期间用于按名字解析。
-- 静态表项不可注销（返回 `-ELIB_DRV_ERR_NOT_SUPPORTED`）；静态设备只能绑定
-  静态 controller，运行时设备可绑定两者。
-- 注销后的运行时句柄立即失效：重复注销返回 `-ELIB_DRV_ERR_INVALID_PARAM`，
-  槽位被复用后不得再用旧句柄。
-
-### 注册组合矩阵
-
-| controller \ device | 静态 device | 运行时 device |
-|---|---|---|
-| 静态 controller | 支持：`init` 时按名字绑定 | 支持：`register_device` 时按名字绑定 |
-| 运行时 controller | 不支持：`init` 只查静态表，返回 `-ELIB_DRV_ERR_NOT_FOUND` | 支持：先 `register_controller`，再 `register_device` |
-
-- 静态 device 的 `controller` 只在 `elib_drv_init` 时对静态表解析一次，没有延迟绑定/重绑 API；写成 `controller = NULL` 则保持无绑定。
-- 运行时 device 可以绑定静态或运行时 controller；静态 device 不能绑定运行时 controller。
+- **设备树是唯一配置来源**：节点的 `name`、`fops`、`ctx`、`controller`、
+  `flags`、锁超时、children 都在树中；没有 descriptor/static/runtime 注册表
+- **节点名唯一**：`elib_drv_node_find()`、`elib_drv_of_find()`、device 找
+  controller 都用节点名
+- **自动 controller-first 初始化**：`init_tree` 递归先初始化 controller，再初始化
+  依赖它的节点；同一节点一次 init 只调用一次 `fops->init`；失败按逆序回滚
+- **fops 幂等**：`init/deinit` 可能在 deinit→init 循环中再次调用；用户实现需可重复
+- **统一 I/O**：`open/close` 仅调用可选 `fops->open/close` 并维护引用计数/独占；
+  `read/write/ioctl` 在节点初始化后即可用，不强制先 open
+- **controller 直连**：UART、裸 ADC、GPIO 等直接对 controller 节点调
+  `elib_drv_read/write/ioctl`
+- **device 转发**：device fops 内用
+  `elib_drv_node_find(elib_drv_node_controller_name(node))` 找到 controller，
+  再调同一套 I/O；框架负责 controller 节点锁
+- **of 风格查询**：`elib_drv_of_find/of_config/of_name/of_controller/of_children`
+- **零动态内存**：节点句柄数组由用户静态提供，或用
+  `elib_drv_dt_node_count()` 先统计后自行分配
 
 ## 快速上手
 
 ```c
 #include "elib_drv.h"
-#include <stdio.h>
-#include <string.h>
 
-/* ---- 1. 驱动实现：file_operations 风格 ---- */
-static int eeprom_open(elib_drv_device_t *dev, uint32_t flags)
+/* ---- 1. 节点 ctx：硬件配置/状态，一个 void* ---- */
+typedef struct { uint32_t base; uint32_t baud; } uart_cfg_t;
+typedef struct { uint32_t addr; } sensor_cfg_t;
+
+static uart_cfg_t   uart0_cfg  = { 0x40011000u, 115200u };
+static sensor_cfg_t sensor_cfg = { 0x20u };
+
+/* ---- 2. 统一 fops ---- */
+static int uart_init(elib_drv_node_t *node)
 {
-    (void)flags;
-    (void)dev;
-    return 0;
+    uart_cfg_t *cfg = (uart_cfg_t *)elib_drv_node_ctx(node);
+    return uart_hw_init(cfg->base, cfg->baud);
 }
 
-static int eeprom_close(elib_drv_device_t *dev)
+static int uart_read(elib_drv_node_t *node, void *buf, size_t len)
 {
-    (void)dev;
-    return 0;
+    (void)node;
+    return uart_hw_read(buf, len);
 }
 
-static int eeprom_read(elib_drv_device_t *dev, void *buf, size_t len)
+static int uart_write(elib_drv_node_t *node, const void *buf, size_t len)
 {
-    (void)dev;
-    memset(buf, 0, len);
-    return (int)len;
+    (void)node;
+    return uart_hw_write(buf, len);
 }
 
-static int eeprom_write(elib_drv_device_t *dev, const void *buf, size_t len)
+static int sensor_read(elib_drv_node_t *node, void *buf, size_t len)
 {
-    (void)dev;
-    (void)buf;
-    return (int)len;
+    sensor_cfg_t *cfg = (sensor_cfg_t *)elib_drv_node_ctx(node);
+    elib_drv_node_t *ctrl =
+        elib_drv_node_find(elib_drv_node_controller_name(node));
+
+    (void)cfg;                 /* 地址/寄存器选择由 controller 驱动约定 */
+    if (ctrl == NULL) {
+        return -ELIB_DRV_ERR_NOT_FOUND;
+    }
+    return elib_drv_read(ctrl, buf, len);
 }
 
-static int eeprom_ioctl(elib_drv_device_t *dev, uint32_t cmd, void *arg)
-{
-    (void)dev;
-    (void)cmd;
-    (void)arg;
-    return 0;
-}
-
-static const elib_drv_ops_t eeprom_ops = {
-    eeprom_open, eeprom_close, eeprom_read, eeprom_write, eeprom_ioctl
+static const elib_drv_fops_t uart_fops = {
+    .init = uart_init, .read = uart_read, .write = uart_write,
+};
+static const elib_drv_fops_t sensor_fops = {
+    .read = sensor_read,
 };
 
-/* ---- 2. 上下文 + const 描述符表 ---- */
-static elib_drv_controller_t i2c1_ctx;
-static elib_drv_device_t     eeprom_ctx;
-
-static const elib_drv_controller_desc_t ctrls[] = {
-    { .name = "i2c1", .ops = NULL, .priv = NULL, .ctx = &i2c1_ctx },
-};
-static const elib_drv_device_desc_t devs[] = {
-    { .name = "eeprom", .ops = &eeprom_ops, .priv = NULL,
-      .ctx = &eeprom_ctx, .controller = "i2c1" },
+/* ---- 3. 设备树 ---- */
+static const elib_drv_dt_node_t uart_children[] = {
+    { .name = "rhsensor", .fops = &sensor_fops, .ctx = &sensor_cfg,
+      .controller = "uart0" },
 };
 
-static const elib_drv_config_t cfg = {
-    .controllers = ctrls, .controller_count = ELIB_DRV_ARRAY_SIZE(ctrls),
-    .devices     = devs,  .device_count     = ELIB_DRV_ARRAY_SIZE(devs),
-    .runtime     = NULL,
+static const elib_drv_dt_node_t roots[] = {
+    { .name = "uart0", .fops = &uart_fops, .ctx = &uart0_cfg,
+      .children = uart_children,
+      .child_count = ELIB_DRV_ARRAY_SIZE(uart_children),
+      .lock_timeout_ms = 100u },
 };
 
-/* ---- 3. 启动 ---- */
-int app_start(void)
+static const elib_drv_dt_t tree = {
+    .children = roots, .child_count = ELIB_DRV_ARRAY_SIZE(roots),
+};
+
+/* ---- 4. 初始化：句柄数量可以先统计 ---- */
+static elib_drv_node_t g_nodes[2];
+
+int app_boot(void)
 {
-    elib_drv_device_t *dev;
-    unsigned char buf[16];
+    unsigned node_count = 0u;
+    elib_drv_node_t *sensor;
+    elib_drv_node_t *uart;
+    uint8_t buf[16];
     int rc;
 
-    elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* 可选：直接接 printf */
-    rc = elib_drv_init(NULL, &cfg);      /* 裸机；RTOS 见下节 */
-    if (rc != 0) {
-        return rc;
-    }
-    dev = elib_drv_device_find("eeprom");
-    if (dev == NULL) {
+    elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);
+
+    rc = elib_drv_dt_node_count(&tree, &node_count);
+    if (rc != 0 || node_count > ELIB_DRV_ARRAY_SIZE(g_nodes)) {
         return -1;
     }
-    (void)elib_drv_open(dev, 0);
-    (void)elib_drv_read(dev, buf, sizeof buf);
-    (void)elib_drv_ioctl(dev, ELIB_DRV_IOC(1, 0), NULL);
-    (void)elib_drv_close(dev);
-    return 0;
-}
-```
-
-## 控制器直连（不经过 device）
-
-UART、裸 ADC、GPIO 这类控制器经常不需要 device 层。给 controller 描述符挂上
-`fops`，就可以像 device 一样直接 open / close / read / write / ioctl：
-
-```c
-static int uart_open(elib_drv_controller_t *ctrl, uint32_t flags)
-{
-    (void)flags;
-    return uart_set_baud(elib_drv_controller_priv(ctrl), 115200);
-}
-
-static int uart_read(elib_drv_controller_t *ctrl, void *buf, size_t len)
-{
-    return uart_ring_read(elib_drv_controller_priv(ctrl), buf, len);
-}
-
-static int uart_write(elib_drv_controller_t *ctrl, const void *buf, size_t len)
-{
-    return uart_ring_write(elib_drv_controller_priv(ctrl), buf, len);
-}
-
-static int uart_ioctl(elib_drv_controller_t *ctrl, uint32_t cmd, void *arg)
-{
-    return uart_control(elib_drv_controller_priv(ctrl), cmd, arg);
-}
-
-static const elib_drv_controller_fops_t uart_fops = {
-    uart_open, NULL, uart_read, uart_write, uart_ioctl
-};
-
-static elib_drv_controller_t uart_ctx;
-static const elib_drv_controller_desc_t ctrls[] = {
-    { .name = "uart1", .ops = NULL, .fops = &uart_fops,
-      .priv = &uart_hw, .ctx = &uart_ctx, .lock_timeout_ms = 100 },
-};
-```
-
-```c
-elib_drv_controller_t *uart = elib_drv_controller_find("uart1");
-
-elib_drv_controller_open(uart, 0);
-elib_drv_controller_write(uart, "AT\r\n", 4);
-elib_drv_controller_read(uart, buf, sizeof buf);
-elib_drv_controller_ioctl(uart, ELIB_DRV_IOC(3, 1), &baud);
-elib_drv_controller_close(uart);
-```
-
-规则：
-
-- 直连 open/close 是引用计数，与 device 的打开状态**互相独立**；直连打开期间
-  `elib_drv_deinit` / `elib_drv_unregister_controller` 返回
-  `-ELIB_DRV_ERR_BUSY`。
-- 每次直连调用都取 **controller 锁**（超时来自 `desc.lock_timeout_ms`，
-  0 = 永远），和 device 驱动访问同一总线时用的是同一把锁，逐次调用不会交错。
-- `fops` 在 controller 锁内被调用：实现里**不要**再调
-  `elib_drv_controller_lock`，也**不要**回调 `elib_drv_device_*`
-  （会与 `device → controller` 的加锁顺序相反）。
-- `fops` 为 NULL 或某个钩子为 NULL：open/close 仍可用（只计数），对应 I/O
-  返回 `-ELIB_DRV_ERR_NOT_SUPPORTED`。
-- 直连与 device 长期混用是否允许由驱动决定：`fops->open` 里可以用
-  `elib_drv_controller_device_count(ctrl)` 检查是否已有 device 绑定，必要时
-  返回 `-ELIB_DRV_ERR_BUSY`。
-
-## 核心概念
-
-### 返回约定
-
-所有函数返回 `int`：`0` 或正数为成功（`read/write` 是字节数，`ioctl` 由驱动
-定义正数语义），负数为失败，值恒为 `-(elib_drv_err_t)`。驱动私有错误从
-`-ELIB_DRV_ERR_DRIVER_BASE - n` 起用，框架原样透传。
-
-| 错误码 | 含义 |
-|---|---|
-| `ELIB_DRV_ERR_INVALID_PARAM` | `NULL` / 空名 / 表项不自洽 / port 回调不全 |
-| `ELIB_DRV_ERR_NOT_INITIALIZED` | 未 `elib_drv_init` |
-| `ELIB_DRV_ERR_ALREADY_INIT` | 重复 init |
-| `ELIB_DRV_ERR_ALREADY_EXIST` | 静态表内或与运行时表重名 |
-| `ELIB_DRV_ERR_NOT_FOUND` | 按名字找不到 controller |
-| `ELIB_DRV_ERR_NO_SLOT` | 运行时表不存在或已满 |
-| `ELIB_DRV_ERR_BUSY` | deinit 时仍有打开的设备或直连打开的 controller，或 init 仍在执行；unregister_controller 时仍有打开的设备/直连打开、仍绑定设备，或在其 init 内注销自身 |
-| `ELIB_DRV_ERR_NOT_OPEN` | 未打开就 read/write/ioctl |
-| `ELIB_DRV_ERR_NOT_SUPPORTED` | 对应 ops 为 `NULL`；或注销静态项 |
-| `ELIB_DRV_ERR_LOCK` | 建锁失败 / 加锁超时 |
-| `ELIB_DRV_ERR_TIMEOUT` / `_IO` | 驱动可返回的常规错误 |
-
-### 打开语义
-
-- 打开是引用计数：open 三次，`ops->open` 只调一次；close 到计数归零才调
-  `ops->close`。controller 直连的 open/close 遵循同一规则，但计数与 device
-  分开。
-- close 先递减计数、再在归零时调 `ops->close`；若 `ops->close` 返回负值，
-  计数已经释放，框架返回该错误并记录日志（设备仍按已关闭处理）。
-- `ELIB_DRV_DEV_F_EXCLUSIVE`：已有打开者时再次 open 返回 `-BUSY`。
-- `read/write/ioctl` 要求设备/控制器已打开（`-NOT_OPEN`），并持有对应的锁。
-- 设备锁超时取 `desc.lock_timeout_ms`，直连的 controller 锁取
-  `controller_desc.lock_timeout_ms`，`0` 表示永远等待；拿不到锁返回
-  `-ELIB_DRV_ERR_LOCK`。
-
-### 控制器锁
-
-多个设备共享总线时，由驱动在 ops 内显式加 controller 锁：
-
-```c
-static int sensor_read(elib_drv_device_t *dev, void *buf, size_t len)
-{
-    elib_drv_controller_t *bus = elib_drv_device_controller(dev);
-    int rc = elib_drv_controller_lock(bus, ELIB_DRV_WAIT_FOREVER);
-
+    rc = elib_drv_init_tree(NULL, &tree, g_nodes,
+                            ELIB_DRV_ARRAY_SIZE(g_nodes));
     if (rc != 0) {
         return rc;
     }
-    rc = i2c_burst_read(elib_drv_controller_priv(bus), dev, buf, len);
-    (void)elib_drv_controller_unlock(bus);
-    return rc;
-}
-```
 
-## 可选流程日志
+    /* controller 直连 */
+    uart = elib_drv_node_find("uart0");
+    (void)elib_drv_open(uart, 0u);
+    (void)elib_drv_write(uart, "boot\r\n", 6u);
+    (void)elib_drv_close(uart);
 
-```c
-elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);  /* 最简单：直接接 printf */
+    /* device：内部找 controller 并转发 */
+    sensor = elib_drv_node_find("rhsensor");
+    (void)elib_drv_read(sensor, buf, sizeof buf);
 
-/* 或者自己的串口/RTT logger */
-#include <stdarg.h>
-#include <stdio.h>
-
-static int uart_log(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
+    (void)elib_drv_deinit();
     return 0;
 }
-elib_drv_set_log(uart_log, ELIB_DRV_LOG_NEWLINE_LF);
 ```
 
-- 框架只在 **释放锁之后** 调用日志回调，回调里不会持有框架锁。
-- 回调可能被多个任务并发调用（不同设备同时 open），需自行保证线程安全。
-- **不得**在回调里调用任何 `elib_drv_*`（防递归/重入）。
-- 记录点：init 开始/成功/失败、controller init/deinit 与失败、注册/注销及失败
-  原因、device 的 open/close 及失败、**controller 直连的 open/close 及失败**、
-  deinit busy、锁超时。read/write/ioctl 不打印。
-- 行尾在设置时决定：`elib_drv_set_log(fn, newline)`，`newline` 取 `0`（不追加）、
-  `ELIB_DRV_LOG_NEWLINE_LF`（`\n`，默认推荐）或 `ELIB_DRV_LOG_NEWLINE_CRLF`（`\r\n`）；
-  设置在 `init`/`deinit` 后保留，非法值返回 `-ELIB_DRV_ERR_INVALID_PARAM`。
-- 回调收到的是完整一行（默认已带行尾），**不要**再自行追加 `\n`，否则会出现空行。
-- 消息格式固定为 `"[elib_drv] I|W|E: ..."`，只用 `%s/%u/%d`。
-- `elib_drv_set_log(NULL, ELIB_DRV_LOG_NEWLINE_LF)` 关闭；`deinit` 不会清除已注册的回调。
-- 编译时 `-DELIB_DRV_LOG_ENABLE=0` 可把全部日志调用与格式串裁掉（默认开启）。
-
-## API
+运行时申请句柄（仍由用户负责释放）：
 
 ```c
-/* manager */
-int elib_drv_init(const elib_drv_port_t *port, const elib_drv_config_t *config);
-int elib_drv_deinit(void);
-elib_drv_controller_t *elib_drv_controller_find(const char *name);
-elib_drv_device_t     *elib_drv_device_find(const char *name);
-int elib_drv_device_foreach(int (*fn)(elib_drv_device_t *, void *), void *arg);
+unsigned n = 0u;
+elib_drv_node_t *nodes;
 
-/* 运行时注册 */
-int elib_drv_register_controller(const elib_drv_controller_desc_t *, elib_drv_controller_t **out);
-int elib_drv_unregister_controller(elib_drv_controller_t *);
-int elib_drv_register_device(const elib_drv_device_desc_t *, elib_drv_device_t **out);
-int elib_drv_unregister_device(elib_drv_device_t *);
-
-/* 用户 I/O（device） */
-int elib_drv_open(elib_drv_device_t *, uint32_t flags);
-int elib_drv_close(elib_drv_device_t *);
-int elib_drv_read(elib_drv_device_t *, void *buf, size_t len);
-int elib_drv_write(elib_drv_device_t *, const void *buf, size_t len);
-int elib_drv_ioctl(elib_drv_device_t *, uint32_t cmd, void *arg);
-
-/* 控制器直连（不经过 device） */
-int elib_drv_controller_open(elib_drv_controller_t *, uint32_t flags);
-int elib_drv_controller_close(elib_drv_controller_t *);
-int elib_drv_controller_read(elib_drv_controller_t *, void *buf, size_t len);
-int elib_drv_controller_write(elib_drv_controller_t *, const void *buf, size_t len);
-int elib_drv_controller_ioctl(elib_drv_controller_t *, uint32_t cmd, void *arg);
-
-/* 驱动侧 */
-const char *elib_drv_controller_name(const elib_drv_controller_t *);
-void       *elib_drv_controller_priv(const elib_drv_controller_t *);
-unsigned    elib_drv_controller_open_count(const elib_drv_controller_t *);
-unsigned    elib_drv_controller_device_count(const elib_drv_controller_t *);
-int         elib_drv_controller_lock(elib_drv_controller_t *, uint32_t timeout_ms);
-int         elib_drv_controller_unlock(elib_drv_controller_t *);
-const char *elib_drv_device_name(const elib_drv_device_t *);
-void       *elib_drv_device_priv(const elib_drv_device_t *);
-elib_drv_controller_t *elib_drv_device_controller(const elib_drv_device_t *);
-unsigned    elib_drv_device_open_count(const elib_drv_device_t *);
-
-/* 流程日志 */
-typedef int (*elib_drv_log_fn)(const char *fmt, ...);
-#define ELIB_DRV_LOG_NEWLINE_NONE  0u
-#define ELIB_DRV_LOG_NEWLINE_LF    1u
-#define ELIB_DRV_LOG_NEWLINE_CRLF  2u
-int elib_drv_set_log(elib_drv_log_fn fn, unsigned newline);
+if (elib_drv_dt_node_count(&tree, &n) != 0) {
+    return -1;
+}
+nodes = (n != 0u) ? malloc(n * sizeof(*nodes)) : NULL;
+if (n != 0u && nodes == NULL) {
+    return -1;
+}
+if (elib_drv_init_tree(NULL, &tree, nodes, n) != 0) {
+    free(nodes);
+    return -1;
+}
+/* ... */
+elib_drv_deinit();
+free(nodes);
 ```
 
-`ioctl` 命令建议用 `ELIB_DRV_IOC(group, nr)` 生成，驱动私有命令定义在驱动
-自己的头文件里，不进库。
+## 架构与调用路径
+
+```text
+elib_drv_init_tree()
+  → 校验树/节点名/深度/controller 引用
+  → 统计节点数，检查用户句柄数组容量
+  → 预序填充句柄、建每节点锁
+  → 递归 init_node(controller) → fops->init(node)
+  → 失败按 init_order 逆序回滚
+
+用户/device I/O:
+  elib_drv_read/write/ioctl(node)
+    → 取节点锁
+    → 分发 node->dt->fops
+    → 放锁
+
+device 转发:
+  device fops 内
+    → elib_drv_node_controller_name(node)
+    → elib_drv_node_find(name)
+    → elib_drv_read/write/ioctl(controller_node)
+      → 取 controller 节点锁，分发 controller fops
+```
+
+## 核心 API
+
+| API | 说明 |
+|-----|------|
+| `elib_drv_dt_node_count(tree, &n)` | 统计整棵树节点数，可用于申请句柄数组 |
+| `elib_drv_init_tree(port, tree, nodes, cap)` | 校验、建锁、自动初始化全部节点 |
+| `elib_drv_deinit()` | 检查打开计数，逆序 deinit，销毁锁 |
+| `elib_drv_node_find(name)` | 按节点名取运行时句柄 |
+| `elib_drv_node_foreach(fn, arg)` | 遍历所有节点 |
+| `elib_drv_open/close(node, ...)` | 可选 open/close，引用计数 + 独占 |
+| `elib_drv_read/write/ioctl(node, ...)` | 统一节点 I/O |
+| `elib_drv_node_lock/unlock` | 驱动组合多次 controller 操作时显式加锁 |
+| `elib_drv_node_name/ctx/controller/...` | 句柄访问器 |
+| `elib_drv_of_find/config/name/controller/children` | 设备树常查 API |
+
+错误码见 `elib_drv_err_t`。`read/write` 返回字节数；驱动返回值大于 `len`
+会被映射为 `-ELIB_DRV_ERR_IO`。
+
+## 初始化与生命周期
+
+- `elib_drv_dt_node_count()`：只校验 children 指针/数量、深度（≤ 8）和计数，
+  不检查重名/controller 引用；空树返回 0。
+- `elib_drv_init_tree()`：要求未初始化；节点总数 ≤ `node_capacity`。
+  每个节点自动调用一次 `fops->init`（若有）；controller 先于依赖节点。
+  初始化失败返回原错误；已成功节点按逆序 `deinit`，manager 复位。
+- `elib_drv_deinit()`：任一节点 `open_count != 0` 返回 `-BUSY`；按 init 逆序
+  调用 `deinit`，销毁锁；日志配置保留；可再次 init。
+- `fops->init/deinit/open/close` 需幂等：deinit 后再次 init_tree 会再次调用
+  init；open/close 可能多轮进入。
+
+## 锁、并发与 controller 转发
+
+- 每个节点一把锁，超时取节点 `lock_timeout_ms`；0 表示 `WAIT_FOREVER`。
+- `read/write/ioctl` 在节点锁内调用 fops；`open/close` 也在节点锁内。
+- device 转发调用 controller I/O 时顺序为 `device 节点锁 → controller 节点锁`；
+  禁止反向，也禁止在同一节点 fops 内再次调用该节点的 I/O。
+- controller fops 被 device 转发时已持有 controller 锁，不得再次锁同一节点。
+- `elib_drv_node_lock/unlock` 用于需要把多次 controller 操作合并的驱动。
+
+## 流程日志
+
+```c
+elib_drv_set_log(printf, ELIB_DRV_LOG_NEWLINE_LF);
+```
+
+- 0 = 不追加行尾，1 = `\n`（推荐），2 = `\r\n`；非法值返回
+  `-ELIB_DRV_ERR_INVALID_PARAM`。
+- 回调在框架锁外调用，必须线程安全，且不得回调 `elib_drv_*`。
+- `-DELIB_DRV_LOG_ENABLE=0` 整段裁掉日志；`set_log` API 仍存在。
+- 日志覆盖 init/deinit/open/close/失败/锁超时；read/write/ioctl 不打印。
 
 ## RTOS 移植
 
-唯一需要移植的是 `elib_drv_port_t`：
-
-```c
-typedef struct {
-    void *(*mutex_create)(const char *name);
-    void  (*mutex_destroy)(void *mutex);
-    int   (*mutex_lock)(void *mutex, uint32_t timeout_ms);
-    int   (*mutex_unlock)(void *mutex);
-} elib_drv_port_t;
-```
-
-四个回调必须齐全；`mutex_lock` 成功返回 0、失败返回负值（框架统一映射为
-`-ELIB_DRV_ERR_LOCK`）；`timeout_ms` 为 `ELIB_DRV_WAIT_FOREVER` 或毫秒。
-**框架自身不做任何分配**，互斥量存储由 port 负责（堆或静态池都可以）。
-
-### FreeRTOS
-
-```c
-static void *port_create(const char *name)
-{
-    (void)name;
-    return (void *)xSemaphoreCreateMutex();
-}
-
-static void port_destroy(void *m)
-{
-    vSemaphoreDelete((SemaphoreHandle_t)m);
-}
-
-static int port_lock(void *m, uint32_t timeout_ms)
-{
-    TickType_t ticks = (timeout_ms == ELIB_DRV_WAIT_FOREVER)
-                           ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-    return (xSemaphoreTake((SemaphoreHandle_t)m, ticks) == pdTRUE) ? 0 : -1;
-}
-
-static int port_unlock(void *m)
-{
-    return (xSemaphoreGive((SemaphoreHandle_t)m) == pdTRUE) ? 0 : -1;
-}
-
-static const elib_drv_port_t port = {
-    port_create, port_destroy, port_lock, port_unlock
-};
-```
-
-零堆版本把 `xSemaphoreCreateMutex` 换成 `xSemaphoreCreateMutexStatic`
-（配 `StaticSemaphore_t` 数组）。
-
-### CMSIS-RTOS2
-
-```c
-static void *port_create(const char *name)
-{
-    (void)name;
-    return (void *)osMutexNew(NULL);
-}
-
-static void port_destroy(void *m)
-{
-    (void)osMutexDelete((osMutexId_t)m);
-}
-
-static int port_lock(void *m, uint32_t timeout_ms)
-{
-    uint32_t ticks = (timeout_ms == ELIB_DRV_WAIT_FOREVER)
-                         ? osWaitForever : timeout_ms;
-    return (osMutexAcquire((osMutexId_t)m, ticks) == osOK) ? 0 : -1;
-}
-
-static int port_unlock(void *m)
-{
-    return (osMutexRelease((osMutexId_t)m) == osOK) ? 0 : -1;
-}
-```
-
-### 裸机 / 单线程
-
-`elib_drv_init(NULL, &cfg)`：不建锁、不加锁、零额外 RAM，日志仍可独立使用。
-
-## 并发与锁规则
-
-| 锁 | 保护对象 | 谁取 | 超时 |
-|---|---|---|---|
-| device 锁 | 打开计数 + 设备状态 + ops 串行化 | 框架 | `device_desc.lock_timeout_ms`（0 = 永远） |
-| controller 锁 | 总线/共享寄存器 + 直连 fops 串行化 | 框架（直连 API）+ 驱动（device ops 内共享总线时） | 直连：`controller_desc.lock_timeout_ms`；驱动自选 |
-
-- 允许 `device → controller` 嵌套；禁止反向。直连调用只持 controller 锁，
-  不嵌套 device 锁。同一设备/控制器的 ops 或 fops 内禁止再调对应的
-  `elib_drv_*read/write/ioctl/open/close`（非递归锁会自锁）。
-- `init` / `deinit` / `register_*` / `unregister_*` 只在启动或设备发现期调用，
-  不与 I/O 并发；`find` / `foreach` 只读，可与 I/O 并发，但不得与
-  `register_*` / `unregister_*` 并发（会拿到悬空指针）；`foreach` 回调内
-  不得注册或注销。
-- 全部 API 仅任务上下文可用，ISR 不调用；驱动需要 ISR 访问时用自己的机制。
-- 注销静态项返回 `-NOT_SUPPORTED`；运行时项在设备打开或 controller 直连打开
-  期间返回 `-BUSY`。
-- 日志在锁外打印，回调不得回调 `elib_drv_*`，需线程安全。
+`elib_drv_port_t` 四个回调：`mutex_create/destroy/lock/unlock`。
+`NULL` port 表示裸机不锁。完整示例见
+[docs/usage_porting.md](docs/usage_porting.md)。
 
 ## 构建与测试
 
-无构建系统：把 `include/` 加进头文件路径，把 `src/*.c` 加进工程即可。
+无构建系统：把 `include/` 加进头文件路径，把 `src/*.c` 加进工程。
 
 ```bash
 # 编译库
 arm-none-eabi-gcc -std=c99 -Wall -Wextra -Werror -Iinclude \
-    -c src/elib_drv_manager.c src/elib_drv_device.c
+    -c src/elib_drv_manager.c src/elib_drv_tree.c src/elib_drv_node.c
 
 # 功能回归（只用公共头）
 gcc -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude \
     test/test_elib_drv.c src/*.c -o t_drv && ./t_drv
 
-# 并发验证（POSIX，不属于默认构建）
-gcc -std=c99 -pthread -Iinclude test/test_elib_drv_mt.c src/*.c \
-    -o t_mt && ./t_mt
-
 # 日志裁剪构建
 gcc -std=c99 -Wall -Wextra -Werror -DELIB_DRV_LOG_ENABLE=0 \
     -Iinclude -c src/*.c
+
+# 并发验证（POSIX pthread，不属于默认构建）
+gcc -std=c99 -pthread -Iinclude test/test_elib_drv_mt.c src/*.c \
+    -o t_mt && ./t_mt
 ```
+
+测试覆盖：树计数/深度/校验、auto controller-first init、失败回滚、幂等/reinit、
+统一 I/O、缺失 fops、exclusive、controller 转发、日志行尾、锁/端口。
 
 ## 目录
 
-```
-include/elib_drv.h       唯一公共头：错误码/描述符/上下文/port/API/日志
-src/elib_drv_internal.h  内部单例、锁助手、日志宏
-src/elib_drv_manager.c   init/deinit/校验/双表/注册注销/查找/遍历
-src/elib_drv_device.c    open/close/read/write/ioctl/访问器/控制器锁
-test/test_elib_drv.c     功能 + 双表 + 日志 + 锁纪律回归
-test/test_elib_drv_mt.c  POSIX 多线程验证（-pthread）
-docs/usage_*.md          9 篇流程文档（每篇配 .en.md 英文版）
+```text
+include/elib_drv.h        唯一公共头：错误码/树/fops/句柄/port/API/日志
+src/elib_drv_internal.h   内部单例、锁助手、日志宏
+src/elib_drv_manager.c    树校验/句柄填充/init/deinit/查找/遍历/日志设置
+src/elib_drv_tree.c       节点计数、树查找、of API
+src/elib_drv_node.c       统一 I/O、节点锁、句柄访问器
+test/test_elib_drv.c      功能 + 生命周期 + 日志 + 端口回归
+test/test_elib_drv_mt.c   POSIX 多线程验证（-pthread）
+docs/usage_*.md           6 篇流程文档（每篇配 .en.md 英文版）
 ```
 
 ## License
