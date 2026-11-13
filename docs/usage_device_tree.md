@@ -149,6 +149,51 @@ const elib_drv_dt_node_t *children =
 - 运行时解析后的 controller 用 `elib_drv_node_controller()` /
   `elib_drv_node_controller_name()` 获取。
 
+## 离线检查脚本
+
+`scripts/dt_check.py` 不需要编译，直接解析 C 源里的 `elib_drv_dt_node_t` 数组，
+把零散的 children 数组展开成完整表：
+
+```bash
+python scripts/dt_check.py src/app_dt.c --root roots
+```
+
+输出 Markdown 表：
+
+```text
+| # | depth | name | kind | controller(cfg) | controller(resolved) | fops | ctx | flags | lock_ms | children | source |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1 | uart0 | controller | - | - | &uart_fops | &uart0_cfg | - | 100u | uart_children[1] | src/app_dt.c:32 |
+| 1 | 2 | rhsensor | device | uart0 | uart0 | &sensor_fops | &sensor_cfg | - | 0u | - | src/app_dt.c:11 |
+```
+
+它还会输出：
+
+- `Root arrays`、`Node count`、`Max depth`；
+- 建议的句柄数组大小：`elib_drv_node_t nodes[N];`；
+- 重复节点名、缺失 controller、controller 自引用/成环、children 数组未声明、
+  `child_count` 与实际数组长度不一致、深度超过 8 等错误。
+
+常用参数：
+
+```bash
+# 自动选择未被其他节点 children 引用的根数组
+python scripts/dt_check.py src/app_dt.c
+
+# 同时检查多个文件
+python scripts/dt_check.py src/app_dt.c src/board_dt.c --root roots
+
+# JSON / CSV，便于 CI 或表格工具
+python scripts/dt_check.py src/app_dt.c --root roots --format json
+python scripts/dt_check.py src/app_dt.c --root roots --format csv
+
+# 顺便检查句柄容量；警告也作为失败
+python scripts/dt_check.py src/app_dt.c --root roots --capacity 8 --strict
+```
+
+脚本支持 `.name = ...` 指定初始化器和按 `elib_drv_dt_node_t` 字段顺序的位置
+初始化器；不执行宏，只识别 `ELIB_DRV_ARRAY_SIZE(数组名)` 和整数常量。
+
 ## 注意
 
 - 树、节点名、`ctx`、fops 表必须比 manager 生命周期长。

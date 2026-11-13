@@ -1,6 +1,8 @@
 *.o
 *.out
 *.a
+__pycache__/
+*.pyc
 /t_drv
 /t_mt
 /t_san

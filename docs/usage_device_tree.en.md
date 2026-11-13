@@ -158,6 +158,52 @@ const elib_drv_dt_node_t *children =
 - For the resolved controller use `elib_drv_node_controller()` /
   `elib_drv_node_controller_name()`.
 
+## Offline Check Script
+
+`scripts/dt_check.py` parses `elib_drv_dt_node_t` arrays directly from C source
+without compiling and expands the scattered children arrays into one table:
+
+```bash
+python scripts/dt_check.py src/app_dt.c --root roots
+```
+
+Markdown output:
+
+```text
+| # | depth | name | kind | controller(cfg) | controller(resolved) | fops | ctx | flags | lock_ms | children | source |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1 | uart0 | controller | - | - | &uart_fops | &uart0_cfg | - | 100u | uart_children[1] | src/app_dt.c:32 |
+| 1 | 2 | rhsensor | device | uart0 | uart0 | &sensor_fops | &sensor_cfg | - | 0u | - | src/app_dt.c:11 |
+```
+
+It also reports:
+
+- `Root arrays`, `Node count`, `Max depth`;
+- the suggested handle array size: `elib_drv_node_t nodes[N];`;
+- duplicate names, missing/self/cyclic controllers, undeclared children arrays,
+  `child_count` mismatches and depth greater than 8.
+
+Common options:
+
+```bash
+# auto-select arrays that are not referenced by another node's children
+python scripts/dt_check.py src/app_dt.c
+
+# scan several files
+python scripts/dt_check.py src/app_dt.c src/board_dt.c --root roots
+
+# JSON / CSV for CI or spreadsheet tools
+python scripts/dt_check.py src/app_dt.c --root roots --format json
+python scripts/dt_check.py src/app_dt.c --root roots --format csv
+
+# also check handle capacity; make warnings fatal
+python scripts/dt_check.py src/app_dt.c --root roots --capacity 8 --strict
+```
+
+The script accepts designated initializers (`.name = ...`) and positional
+initializers in `elib_drv_dt_node_t` field order. It does not evaluate macros;
+it recognizes `ELIB_DRV_ARRAY_SIZE(array)` and integer constants.
+
 ## Notes
 
 - The tree, node names, `ctx` and fops tables must outlive the manager.

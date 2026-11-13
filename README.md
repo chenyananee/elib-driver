@@ -36,6 +36,8 @@
   `elib_drv_node_find(elib_drv_node_controller_name(node))` 找到 controller，
   再调同一套 I/O；框架负责 controller 节点锁
 - **of 风格查询**：`elib_drv_of_find/of_config/of_name/of_controller/of_children`
+- **离线检查脚本**：`scripts/dt_check.py` 把零散 children 数组展开成完整表，
+  检查重名、controller 引用、深度和句柄容量，无需编译
 - **零动态内存**：节点句柄数组由用户静态提供，或用
   `elib_drv_dt_node_count()` 先统计后自行分配
 
@@ -167,6 +169,32 @@ elib_drv_deinit();
 free(nodes);
 ```
 
+## 设备树检查脚本
+
+不编译、不运行固件，直接解析 C 源里的 `elib_drv_dt_node_t` 数组：
+
+```bash
+python scripts/dt_check.py src/app_dt.c --root roots
+```
+
+输出一张完整节点表（名称、深度、controller、fops、ctx、flags、children、
+source 行号），并检查重名、缺失 controller、controller 环、children 数组
+未声明、`child_count` 不一致、深度超限和句柄容量。
+
+```bash
+# 自动选择根数组
+python scripts/dt_check.py src/app_dt.c
+
+# JSON/CSV，便于 CI 或表格工具
+python scripts/dt_check.py src/app_dt.c --root roots --format json
+python scripts/dt_check.py src/app_dt.c --root roots --format csv
+
+# 检查句柄容量，警告也失败
+python scripts/dt_check.py src/app_dt.c --root roots --capacity 8 --strict
+```
+
+详见 [docs/usage_device_tree.md](docs/usage_device_tree.md#离线检查脚本)。
+
 ## 架构与调用路径
 
 ```text
@@ -283,6 +311,7 @@ src/elib_drv_tree.c       节点计数、树查找、of API
 src/elib_drv_node.c       统一 I/O、节点锁、句柄访问器
 test/test_elib_drv.c      功能 + 生命周期 + 日志 + 端口回归
 test/test_elib_drv_mt.c   POSIX 多线程验证（-pthread）
+scripts/dt_check.py       设备树 C 源检查/展开表工具（Python 3）
 docs/usage_*.md           6 篇流程文档（每篇配 .en.md 英文版）
 ```
 

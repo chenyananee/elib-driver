@@ -45,6 +45,9 @@ Current version: **2.0.0** (`ELIB_DRV_VERSION`).
   same I/O API; the framework holds the controller node lock.
 - **of-style queries**: `elib_drv_of_find/of_config/of_name/of_controller/
   of_children`.
+- **Offline checker**: `scripts/dt_check.py` expands scattered children arrays
+  into one table and checks duplicates, controllers, depth and handle capacity
+  without compiling.
 - **Zero dynamic memory**: the node handle array is static or sized by
   `elib_drv_dt_node_count()` and allocated by the caller.
 
@@ -176,6 +179,34 @@ elib_drv_deinit();
 free(nodes);
 ```
 
+## Device Tree Check Script
+
+Without compiling or running firmware, parse the `elib_drv_dt_node_t` arrays
+directly from C source:
+
+```bash
+python scripts/dt_check.py src/app_dt.c --root roots
+```
+
+It prints a complete node table (name, depth, controller, fops, ctx, flags,
+children, source line) and checks duplicate names, missing controllers,
+controller cycles, undeclared children arrays, `child_count` mismatches, depth
+and handle capacity.
+
+```bash
+# auto-select root arrays
+python scripts/dt_check.py src/app_dt.c
+
+# JSON/CSV for CI or spreadsheet tools
+python scripts/dt_check.py src/app_dt.c --root roots --format json
+python scripts/dt_check.py src/app_dt.c --root roots --format csv
+
+# check handle capacity; make warnings fatal
+python scripts/dt_check.py src/app_dt.c --root roots --capacity 8 --strict
+```
+
+See [docs/usage_device_tree.en.md](docs/usage_device_tree.en.md#offline-check-script).
+
 ## Architecture and Call Path
 
 ```text
@@ -300,6 +331,7 @@ src/elib_drv_tree.c       node counting, tree lookup, of API
 src/elib_drv_node.c       unified I/O, node locks, handle accessors
 test/test_elib_drv.c      functional + lifecycle + log + port regression
 test/test_elib_drv_mt.c   POSIX multithread check (-pthread)
+scripts/dt_check.py       device-tree C source checker/table tool (Python 3)
 docs/usage_*.md           6 flow documents (each with an .en.md English version)
 ```
 
